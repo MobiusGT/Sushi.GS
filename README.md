@@ -33,7 +33,6 @@ A native Apple Silicon (`arm64`) **macOS 26+** SwiftUI subtitle retiming and MKV
 - **Live Log Inspector & Automatic Audio-Matching Warnings**
   - Real-time streaming Log Inspector (`⌃⌘I`) with search, `All` / `Warnings` / `Errors` filtering, copy, and `.log` export.
   - Automatically flags max-window fallbacks, broken segments, high audio diff scores, sudden shift jumps, large average shifts, chapter/keyframe inconsistencies, and pipeline warnings with a prominent warning banner and one-click **Jump to Warning**.
-- **Clean Mid-Flight Cancellation**
 - **Zero-Terminal In-App Dependency Manager**
   - Installs and updates `uv`, managed Python 3.13, `sushi-batch` (+ `sushi-sub-next`), and standalone Apple Silicon `ffmpeg`/`ffprobe` directly inside `~/Library/Application Support/Sushi.GS/`, plus optional `mkvmerge`, `opusenc`, and guided `aegisub-cli` setup.
 
