@@ -1,4 +1,4 @@
-# Sushi.GS aka Gas Station sushi
+# <p align="center"> Sushi.GS aka Gas Station sushi
 
 <p align="center">
   <img src="Icon/AppIcon.icon/Assets/tamago.png" width="180" alt="Sushi.GS icon">
