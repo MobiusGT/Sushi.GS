@@ -1,0 +1,12 @@
+.DS_Store
+.build/
+.swiftpm/
+__pycache__/
+*.pyc
+dist/
+*.dmg
+*.dmg.sha256
+*.xcuserdata/
+Resources/Assets.car
+Resources/AppIcon.icns
+Resources/AboutIcon.png

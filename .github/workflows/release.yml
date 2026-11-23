@@ -1,0 +1,90 @@
+name: Release macOS DMG
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Release version (e.g. 0.1.0)'
+        required: false
+        default: '0.1.0'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build Sushi.GS (arm64 macOS 26+)
+    runs-on: macos-26
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify toolchain
+        run: |
+          sw_vers
+          swift --version
+          xcodebuild -version
+          python3 -m py_compile Resources/worker.py
+
+      - name: Run SushiGSKit unit tests
+        run: swift test
+
+      - name: Resolve release version
+        id: meta
+        run: |
+          if [[ "${{ github.ref_type }}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="${{ github.event.inputs.version || '0.1.0' }}"
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "build=${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Import Developer ID signing certificate (optional)
+        if: ${{ secrets.MACOS_CERTIFICATE_P12 != '' }}
+        env:
+          MACOS_CERTIFICATE_P12: ${{ secrets.MACOS_CERTIFICATE_P12 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/release-signing.keychain-db"
+          KEYCHAIN_PASS=$(uuidgen)
+          security create-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+          echo "$MACOS_CERTIFICATE_P12" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -P "$MACOS_CERTIFICATE_PASSWORD" -A -t cert -f pkcs12 -k "$KEYCHAIN_PATH"
+          security list-keychain -d user -s "$KEYCHAIN_PATH"
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "$KEYCHAIN_PASS" "$KEYCHAIN_PATH"
+
+      - name: Build Sushi.GS DMG
+        env:
+          APP_VERSION: ${{ steps.meta.outputs.version }}
+          APP_BUILD: ${{ steps.meta.outputs.build }}
+          CODESIGN_IDENTITY: ${{ secrets.CODESIGN_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          SKIP_FINDER_LAYOUT: "1"
+        run: |
+          chmod +x scripts/build_dmg.sh tools/make_icon.sh
+          scripts/build_dmg.sh
+
+      - name: Upload GitHub Release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            dist/Sushi.GS-${{ steps.meta.outputs.version }}-arm64.dmg
+            dist/Sushi.GS-${{ steps.meta.outputs.version }}-arm64.dmg.sha256
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sushi.GS-${{ steps.meta.outputs.version }}-arm64
+          path: |
+            dist/Sushi.GS-${{ steps.meta.outputs.version }}-arm64.dmg
+            dist/Sushi.GS-${{ steps.meta.outputs.version }}-arm64.dmg.sha256
