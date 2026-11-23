@@ -108,7 +108,7 @@ scripts/build_dmg.sh
 
 ---
 
-## Upstream Ancestry & Credits
+## Credits
 
 `Sushi.GS` ("Gas Station Sushi") is a macOS frontend built on the work of the Sushi subtitle-synchronization ecosystem:
 
