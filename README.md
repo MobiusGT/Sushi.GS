@@ -14,10 +14,6 @@
 
 A native Apple Silicon (`arm64`) **macOS 26+** SwiftUI subtitle retiming and MKV batch utility that wraps **[`C1fer/sushi-batch`](https://github.com/C1fer/sushi-batch)** and **[`C1fer/sushi-next`](https://github.com/C1fer/sushi-next)** (`sushi-sub-next`) via a headless, app-managed Python 3.13 worker.
 
-- **System / Finder / Dock / Apps Drawer Name:** `Sushi.GS` (`Sushi.GS.app`)
-- **In-App Display Name & Window Title:** **Gas Station Sushi**
-- **Platform:** macOS 26+ on Apple Silicon (`arm64`)
-- **Release:** `v0.1.0`
 
 ---
 
@@ -30,7 +26,6 @@ A native Apple Silicon (`arm64`) **macOS 26+** SwiftUI subtitle retiming and MKV
   - **Strict Season Safety:** Differing explicit seasons (`S01E05` vs `S02E05`, `Season 1` vs `Season 2`, `1x05` vs `2x05`) never cross-match.
   - **Auto-Verified Exact Matches:** Exact filenames or identical filename stems across different containers (e.g. `Show - 01.mkv` ↔ `Show - 01.mp4`) auto-verify immediately.
   - **Normalized Episode & Specials Cascade:** Strips release noise (`1080p`, `x265`, `10bit`, `FLAC2.0`, `[DEADBEEF]`, years), normalizes `S##E##`, leading zeroes (`005` → `5`), version tags (`01v2` → `1`), and fractional specials (`01.5` → `1.5`), conservatively matches non-numbered specials (`OVA`, `Movie`, `NCOP`/`NCED`), and leaves genuinely unmatched files clearly labeled **"No match found"** instead of forcing bad matches.
-  - **Per-Row Controls & Contextual Pickers:** One-click per-row **Verify** and header **Verify All**, inline **Choose File…** on unmatched entries, and per-row **Reselect / Remove Source or Target** and **Remove Row** controls that automatically open in the selected Source or Target folder.
 - **Explicit Track Matching & Full Sushi Controls**
   - Inspects media via `ffprobe` (and `mkvmerge -J` for MKVs) to match any Source audio track against any Target audio track and select one or more embedded or external subtitles.
   - Exposes high-value Sushi parameters inline (**24 kHz HQ**, **Window**, **Max Window**, **Keyframe Snapping**, **Chapters**) and full defaults in **Settings → Sync / Merge / Audio**, with concise hover-only descriptions to keep the workspace uncluttered.
@@ -39,7 +34,6 @@ A native Apple Silicon (`arm64`) **macOS 26+** SwiftUI subtitle retiming and MKV
   - Real-time streaming Log Inspector (`⌃⌘I`) with search, `All` / `Warnings` / `Errors` filtering, copy, and `.log` export.
   - Automatically flags max-window fallbacks, broken segments, high audio diff scores, sudden shift jumps, large average shifts, chapter/keyframe inconsistencies, and pipeline warnings with a prominent warning banner and one-click **Jump to Warning**.
 - **Clean Mid-Flight Cancellation**
-  - Cancelling a running job terminates the entire subprocess group (`sushi`, `ffmpeg`, `mkvmerge`, `opusenc`, `aegisub-cli`), removes all isolated per-job temporary artifacts and partial outputs, logs a cleanup summary to the Log Inspector, and leaves Source and Target files untouched.
 - **Zero-Terminal In-App Dependency Manager**
   - Installs and updates `uv`, managed Python 3.13, `sushi-batch` (+ `sushi-sub-next`), and standalone Apple Silicon `ffmpeg`/`ffprobe` directly inside `~/Library/Application Support/Sushi.GS/`, plus optional `mkvmerge`, `opusenc`, and guided `aegisub-cli` setup.
 
