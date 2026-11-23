@@ -25,27 +25,23 @@ A native Apple Silicon (`arm64`) **macOS 26+** SwiftUI subtitle retiming and MKV
       <img src="docs/screenshots/single-episode.png" alt="Single Episode workspace in Dark Mode">
       <br>
       <strong>Single Episode &amp; Live Log Inspector</strong><br>
-      <em>Explicit Source/Target track pickers, inline Sync Options, shift telemetry, audio-matching warnings, and live Log Inspector.</em>
     </td>
     <td width="50%" valign="top" align="center">
       <img src="docs/screenshots/batch-intake.png" alt="Batch Queue two-folder intake in Dark Mode">
       <br>
       <strong>Batch Two-Folder Intake</strong><br>
-      <em>Displays a Ready summary card for the first folder while waiting for the second folder before pairing.</em>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
       <img src="docs/screenshots/batch-queue.png" alt="Batch Queue pairing table and pair editor in Dark Mode">
       <br>
-      <strong>Batch Queue, Verification &amp; Per-Row Controls</strong><br>
-      <em>Season-aware multi-tier pairing with auto-verified exact matches, one-click Verify / Verify All, explicit &ldquo;No match found&rdquo; rows, and per-row reselect/remove controls.</em>
+      <strong>Batch Queue</strong><br>
     </td>
     <td width="50%" valign="top" align="center">
       <img src="docs/screenshots/dependencies.png" alt="In-App Dependency Manager in Dark Mode">
       <br>
       <strong>In-App Dependency Manager</strong><br>
-      <em>Zero-terminal dependency provisioning and one-click <code>sushi-batch</code> updates under <code>~/Library/Application Support/Sushi.GS/</code>.</em>
     </td>
   </tr>
 </table>
