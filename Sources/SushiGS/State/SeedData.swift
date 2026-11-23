@@ -2,12 +2,13 @@ import Foundation
 import SushiGSKit
 
 /// Deterministic sample data populated ONLY when `APP_SEED=1` is passed (for snapshots & visual review).
+/// Uses strictly generic, non-copyrighted filenames and synthetic paths with no personal user info.
 enum SeedData {
     static func populate(model: AppModel) {
         model.dependencies.applySeededPreviewState()
 
-        let srcURL = URL(fileURLWithPath: "/Volumes/Media/WEB-DL/[SubsPlease] Frieren - 04 (1080p) [A9F2C10B].mkv")
-        let dstURL = URL(fileURLWithPath: "/Volumes/Media/BluRay/Frieren.S01E04.1080p.BluRay.x265.10bit.FLAC.mkv")
+        let srcURL = URL(fileURLWithPath: "/Media/Source/Sample_Series_04_WEB_1080p.mkv")
+        let dstURL = URL(fileURLWithPath: "/Media/Target/Sample.Series.S01E04.1080p.BluRay.x265.10bit.FLAC.mkv")
 
         let srcProbe = MediaProbeResult(
             filepath: srcURL.path,
@@ -35,7 +36,7 @@ enum SeedData {
             audioTracks: [
                 AudioTrack(id: 1, codec: "flac", lang: "eng", title: "English 5.1", channelLayout: "5.1", channels: 6, sampleRate: 48000, bitDepth: 24, default: false),
                 AudioTrack(id: 2, codec: "flac", lang: "jpn", title: "Japanese 2.0", channelLayout: "stereo", channels: 2, sampleRate: 48000, bitDepth: 24, default: true),
-                AudioTrack(id: 3, codec: "flac", lang: "jpn", title: "Cast Commentary", channelLayout: "stereo", channels: 2, sampleRate: 48000, bitDepth: 16, default: false),
+                AudioTrack(id: 3, codec: "flac", lang: "jpn", title: "Commentary", channelLayout: "stereo", channels: 2, sampleRate: 48000, bitDepth: 16, default: false),
             ],
             subtitleTracks: []
         )
@@ -95,7 +96,7 @@ enum SeedData {
         ]
         model.singleJob = single
 
-        // Seed Stage 2 batch queue spanning Exact-Name Auto-Verified + Regex Unverified rows.
+        // Seed Stage 2 batch queue spanning Exact-Name Auto-Verified, Regex Unverified, and Unmatched rows.
         let batchFixtures: [(Int, JobStatus, PairMatchKind, Bool, Double?, [SyncWarning], String?)] = [
             (1, .succeeded, .exactFilename, true, 0.842, [], nil),
             (2, .warned, .episodeRegex, false, 1.428, single.warnings, nil),
@@ -107,11 +108,11 @@ enum SeedData {
         for (ep, status, matchKind, verified, shift, warns, err) in batchFixtures {
             let epStr = String(format: "%02d", ep)
             let sURL = matchKind == .exactFilename
-                ? URL(fileURLWithPath: "/Volumes/Media/WEB-DL/Frieren - \(epStr).mkv")
-                : URL(fileURLWithPath: "/Volumes/Media/WEB-DL/[SubsPlease] Frieren - \(epStr) (1080p).mkv")
+                ? URL(fileURLWithPath: "/Media/Source/Sample Series - \(epStr).mkv")
+                : URL(fileURLWithPath: "/Media/Source/Sample_Series_\(epStr)_WEB_1080p.mkv")
             let tURL = matchKind == .exactFilename
-                ? URL(fileURLWithPath: "/Volumes/Media/BluRay/Frieren - \(epStr).mp4")
-                : URL(fileURLWithPath: "/Volumes/Media/BluRay/Frieren.S01E\(epStr).1080p.BluRay.x265.mkv")
+                ? URL(fileURLWithPath: "/Media/Target/Sample Series - \(epStr).mp4")
+                : URL(fileURLWithPath: "/Media/Target/Sample.Series.S01E\(epStr).1080p.BluRay.x265.mkv")
             let job = EpisodeJob(
                 episodeBadge: "S01E\(epStr)",
                 matchKind: matchKind,
@@ -132,7 +133,7 @@ enum SeedData {
                 job.metrics = SyncMetrics(avgShiftSeconds: shift, medianDiff: 0.018, maxDiff: warns.isEmpty ? 0.041 : 0.382, eventCount: 310, groupCount: 4, warningCount: warns.count)
                 job.syncedFiles = ["\(tURL.path).sushi.ass"]
                 if status == .succeeded {
-                    job.mergedFilepath = "/Volumes/Media/BluRay/Merged Files/Frieren - \(epStr).mkv"
+                    job.mergedFilepath = "/Media/Target/Merged Files/Sample Series - \(epStr).mkv"
                 }
             }
             job.logs = single.logs
@@ -143,7 +144,7 @@ enum SeedData {
             episodeBadge: "S02E01",
             matchKind: .unmatched,
             isVerified: false,
-            sourceURL: URL(fileURLWithPath: "/Volumes/Media/WEB-DL/[SubsPlease] Frieren S02E01 (1080p).mkv"),
+            sourceURL: URL(fileURLWithPath: "/Media/Source/Sample_Series_S02E01_WEB_1080p.mkv"),
             targetURL: nil,
             selectedSourceAudioID: 1,
             selectedSubtitleIDs: [3]
@@ -151,8 +152,8 @@ enum SeedData {
         unmatchedJob.sourceProbe = srcProbe
         jobs.append(unmatchedJob)
 
-        model.batchSourceFolder = URL(fileURLWithPath: "/Volumes/Media/WEB-DL")
-        model.batchTargetFolder = URL(fileURLWithPath: "/Volumes/Media/BluRay")
+        model.batchSourceFolder = URL(fileURLWithPath: "/Media/Source")
+        model.batchTargetFolder = URL(fileURLWithPath: "/Media/Target")
         model.stagedSourceMedia = jobs.compactMap(\.sourceURL)
         model.stagedTargetMedia = jobs.compactMap(\.targetURL)
         model.batchJobs = jobs
@@ -167,9 +168,9 @@ enum SeedData {
         model.batchJobs = []
         model.selectedBatchJobIDs = []
         model.isBatchInQueueStage = false
-        model.batchSourceFolder = URL(fileURLWithPath: "/Volumes/Media/WEB-DL/Frieren Season 1")
+        model.batchSourceFolder = URL(fileURLWithPath: "/Media/Source/Sample Series Season 1")
         model.stagedSourceMedia = (1...12).map {
-            URL(fileURLWithPath: String(format: "/Volumes/Media/WEB-DL/Frieren Season 1/[SubsPlease] Frieren - %02d (1080p).mkv", $0))
+            URL(fileURLWithPath: String(format: "/Media/Source/Sample Series Season 1/Sample_Series_%02d_WEB_1080p.mkv", $0))
         }
         model.stagedSourceSubtitles = []
         model.batchTargetFolder = nil

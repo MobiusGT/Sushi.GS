@@ -108,33 +108,34 @@ final class DependencyManager {
         installLogs.removeAll()
     }
 
-    /// Seed synthetic ready state for UI snapshots without network calls.
+    /// Seed synthetic ready state for UI snapshots without network calls or personal paths.
     func applySeededPreviewState() {
+        let appSupport = "~/Library/Application Support/Sushi.GS"
         records[.uv] = DependencyRecord(
-            id: .uv, state: .installed, version: "0.7.12",
-            resolvedPath: paths.uvBinary.path, detail: "App-managed arm64 binary", isManagedByApp: true
+            id: .uv, state: .installed, version: "0.13.9",
+            resolvedPath: "\(appSupport)/bin/uv", detail: "App-managed arm64 binary", isManagedByApp: true
         )
         records[.python] = DependencyRecord(
-            id: .python, state: .installed, version: "3.13.5",
-            resolvedPath: paths.venvPython.path, detail: "Managed uv Python 3.13 venv", isManagedByApp: true
+            id: .python, state: .installed, version: "3.13.18",
+            resolvedPath: "\(appSupport)/venv/bin/python3", detail: "Managed uv Python 3.13 venv", isManagedByApp: true
         )
         records[.sushiBatch] = DependencyRecord(
             id: .sushiBatch, state: .installed, version: "1.1.0 (sushi-sub-next 0.6.7)",
-            resolvedPath: paths.venvDir.path, detail: "Headless worker self-check passed", isManagedByApp: true
+            resolvedPath: "\(appSupport)/venv", detail: "Headless worker self-check passed", isManagedByApp: true
         )
         records[.ffmpeg] = DependencyRecord(
             id: .ffmpeg, state: .installed, version: "7.1.1",
-            resolvedPath: paths.binDir.appendingPathComponent("ffmpeg").path,
+            resolvedPath: "\(appSupport)/bin/ffmpeg",
             detail: "Native Apple Silicon binary", isManagedByApp: true
         )
         records[.ffprobe] = DependencyRecord(
             id: .ffprobe, state: .installed, version: "7.1.1",
-            resolvedPath: paths.binDir.appendingPathComponent("ffprobe").path,
+            resolvedPath: "\(appSupport)/bin/ffprobe",
             detail: "Native Apple Silicon binary", isManagedByApp: true
         )
         records[.mkvmerge] = DependencyRecord(
             id: .mkvmerge, state: .installed, version: "91.0",
-            resolvedPath: "/opt/homebrew/bin/mkvmerge", detail: "MKV merging enabled", isManagedByApp: false
+            resolvedPath: "\(appSupport)/bin/mkvmerge", detail: "MKV merging enabled", isManagedByApp: true
         )
         records[.opusenc] = DependencyRecord(
             id: .opusenc, state: .missing, version: nil, resolvedPath: nil,

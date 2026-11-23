@@ -17,6 +17,30 @@ A native Apple Silicon (`arm64`) **macOS 26+** SwiftUI subtitle retiming and MKV
 
 ---
 
+## Screenshots
+
+### Single Episode & Live Log Inspector
+![Single Episode workspace in Dark Mode](docs/screenshots/single-episode.png)
+
+*Single Episode mode with explicit Source and Target audio/subtitle pickers, inline Sync Options, shift telemetry, automatic audio-matching warnings, and the live Log Inspector.*
+
+### Batch Two-Folder Intake
+![Batch Queue two-folder intake in Dark Mode](docs/screenshots/batch-intake.png)
+
+*Two-folder batch intake displays a Ready summary card for the first folder while waiting for the second folder before pairing.*
+
+### Batch Queue, Verification & Per-Row Controls
+![Batch Queue pairing table and pair editor in Dark Mode](docs/screenshots/batch-queue.png)
+
+*Season-aware multi-tier pairing showing auto-verified exact matches, one-click Verify and Verify All actions, explicit "No match found" rows with contextual file pickers, and per-row reselect/remove controls.*
+
+### In-App Dependency Manager
+![In-App Dependency Manager in Dark Mode](docs/screenshots/dependencies.png)
+
+*Zero-terminal dependency provisioning and one-click `sushi-batch` updates managed under `~/Library/Application Support/Sushi.GS/`.*
+
+---
+
 ## Features
 
 - **Single Episode & Batch Queue Modes**

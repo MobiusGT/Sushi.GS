@@ -212,13 +212,14 @@ private struct DependencyRowView: View {
                     .foregroundStyle(.secondary)
 
                 if let path = record.resolvedPath {
+                    let displayPath = (path as NSString).abbreviatingWithTildeInPath
                     HStack(spacing: Space.xs) {
-                        Text(path)
+                        Text(displayPath)
                             .font(.caption2.monospaced())
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
                             .truncationMode(.middle)
-                            .help(path)
+                            .help(displayPath)
                         Button("Reveal", systemImage: "arrow.up.right.square") {
                             model.revealInFinder(path)
                         }
