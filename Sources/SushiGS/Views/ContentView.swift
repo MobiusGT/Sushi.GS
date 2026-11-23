@@ -37,11 +37,24 @@ struct ContentView: View {
                                 model.openSingleSourcePanel()
                             }
                             .help("Choose a Source video or audio file (Command-O)")
-                        } else if model.sidebar == .batchQueue {
-                            Button("Select Folders", systemImage: "folder.badge.plus") {
-                                model.openBatchFoldersWorkflow()
+
+                            Button("Clear", systemImage: "arrow.counterclockwise") {
+                                model.clearSingleEpisode()
                             }
-                            .help("Select Source and Target folders for batch pairing (Option-Command-O)")
+                            .disabled(model.isRunning || !model.singleJob.hasAnyStateToClear)
+                            .help("Clear files, status, metrics, warnings, and logs to start fresh (Shift-Command-K)")
+                        } else if model.sidebar == .batchQueue {
+                            Button("Add Source Folder", systemImage: "folder.badge.plus") {
+                                model.pickBatchSourceFolder(replaceExisting: !model.isBatchInQueueStage)
+                            }
+                            .disabled(model.isRunning)
+                            .help("Select a Source folder for Batch Queue (Option-Command-O)")
+
+                            Button("Add Target Folder", systemImage: "sparkles.tv") {
+                                model.pickBatchTargetFolder(replaceExisting: !model.isBatchInQueueStage)
+                            }
+                            .disabled(model.isRunning)
+                            .help("Select a Target folder for Batch Queue (Option-Shift-Command-O)")
                         }
                     }
 
@@ -57,7 +70,8 @@ struct ContentView: View {
                             Button("Cancel", systemImage: "stop.fill") {
                                 model.cancelActiveJob()
                             }
-                            .help("Cancel the active operation (Command-Period)")
+                            .disabled(model.isCancelling)
+                            .help("Cancel the active operation and clean temporary files (Command-Period)")
                         } else {
                             Button("Run Sync", systemImage: "play.fill") {
                                 model.runPrimaryAction()
@@ -107,7 +121,7 @@ struct ContentView: View {
         case .singleEpisode:
             model.singleJob.hasRequiredInputs && model.dependencies.allRequiredReady
         case .batchQueue:
-            model.batchJobs.contains(where: \.hasRequiredInputs) && model.dependencies.allRequiredReady
+            model.isBatchInQueueStage && model.batchJobs.contains(where: \.hasRequiredInputs) && model.dependencies.allRequiredReady
         case .dependencies:
             !model.dependencies.isBusy && !model.dependencies.allRequiredReady
         }
@@ -133,8 +147,11 @@ struct ContentView: View {
             if warned > 0 {
                 return ("\(warned)!", Surfaces.statusWarning)
             }
-            if !model.batchJobs.isEmpty {
+            if model.isBatchInQueueStage && !model.batchJobs.isEmpty {
                 return ("\(model.batchJobs.count)", .secondary)
+            }
+            if model.hasStagedSource != model.hasStagedTarget {
+                return ("1/2", Palette.accentText)
             }
             return nil
         case .dependencies:

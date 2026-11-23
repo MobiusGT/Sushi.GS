@@ -78,4 +78,57 @@ struct WorkerProtocolTests {
         #expect(obj["dstAudioStreamId"] as? Int == 2)
         #expect((obj["subtitleTargets"] as? [[String: Any]])?.count == 1)
     }
+
+    @Test("SyncSettings maps all non-default Sushi flags 1:1 to sushi-sub-next CLI arguments")
+    func mapsSushiFlagsAccurately() {
+        let defaults = SyncSettings()
+        #expect(defaults.sushiCLIArguments() == ["--sample-rate", "24000"])
+
+        var custom = SyncSettings(
+            useHighQualityResample: false,
+            advancedArgs: SushiAdvancedArgs(
+                window: 15,
+                maxWindow: 45,
+                rewindThresh: 8,
+                smoothRadius: 5,
+                maxTsDuration: 0.5,
+                maxTsDistance: 0.6
+            ),
+            grouping: false,
+            chaptersMode: .none,
+            keyframesSource: .auto,
+            maxKfDistance: 3.5,
+            kfMode: .snap,
+            srcFps: "23.976",
+            dstFps: "23.976",
+            verboseLogging: true
+        )
+
+        let cli = custom.sushiCLIArguments()
+        #expect(!cli.contains("--sample-rate"))
+        #expect(cli.contains("--window") && cli.contains("15"))
+        #expect(cli.contains("--max-window") && cli.contains("45"))
+        #expect(cli.contains("--rewind-thresh") && cli.contains("8"))
+        #expect(cli.contains("--smooth-radius") && cli.contains("5"))
+        #expect(cli.contains("--max-ts-duration") && cli.contains("0.5"))
+        #expect(cli.contains("--max-ts-distance") && cli.contains("0.6"))
+        #expect(cli.contains("--no-grouping"))
+        #expect(cli.contains("--chapters") && cli.contains("none"))
+        #expect(cli.contains("--src-keyframes") && cli.contains("--dst-keyframes") && cli.contains("auto"))
+        #expect(cli.contains("--max-kf-distance") && cli.contains("3.5"))
+        #expect(cli.contains("--kf-mode") && cli.contains("snap"))
+        #expect(cli.contains("--src-fps") && cli.contains("--dst-fps"))
+        #expect(cli.contains("-v"))
+
+        // Verify external chapters & keyframes files serialize cleanly too
+        custom.chaptersMode = .file
+        custom.chaptersFile = "/tmp/chapters.xml"
+        custom.keyframesSource = .files
+        custom.srcKeyframesFile = "/tmp/src_kf.txt"
+        custom.dstKeyframesFile = "/tmp/dst_kf.txt"
+        let fileCli = custom.sushiCLIArguments()
+        #expect(fileCli.contains("/tmp/chapters.xml"))
+        #expect(fileCli.contains("/tmp/src_kf.txt"))
+        #expect(fileCli.contains("/tmp/dst_kf.txt"))
+    }
 }

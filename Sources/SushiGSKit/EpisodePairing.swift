@@ -35,13 +35,29 @@ public struct EpisodeKey: Hashable, Comparable, Sendable {
     }
 }
 
+/// How a Source -> Target episode pair was matched.
+public enum PairMatchKind: String, Codable, Hashable, Sendable {
+    /// Exact filename or exact filename stem ignoring container extension (auto-verified).
+    case exactFilename
+    /// Matched via episode number regex with differing filenames (starts unverified).
+    case episodeRegex
+    /// Positional fallback or incomplete pair (starts unverified).
+    case unmatched
+}
+
 public struct PairedEpisodeDraft: Identifiable, Hashable, Sendable {
     public var id: UUID
     public var episodeKey: EpisodeKey?
     public var sourceFile: URL?
     public var targetFile: URL?
     public var externalSubtitleFile: URL?
-    public var isExactMatch: Bool
+    public var matchKind: PairMatchKind
+    public var isVerified: Bool
+
+    /// Convenience alias preserved for clarity: true for exact-name or regex episode matches.
+    public var isExactMatch: Bool {
+        matchKind == .exactFilename || matchKind == .episodeRegex
+    }
 
     public init(
         id: UUID = UUID(),
@@ -49,14 +65,16 @@ public struct PairedEpisodeDraft: Identifiable, Hashable, Sendable {
         sourceFile: URL? = nil,
         targetFile: URL? = nil,
         externalSubtitleFile: URL? = nil,
-        isExactMatch: Bool = true
+        matchKind: PairMatchKind = .episodeRegex,
+        isVerified: Bool? = nil
     ) {
         self.id = id
         self.episodeKey = episodeKey
         self.sourceFile = sourceFile
         self.targetFile = targetFile
         self.externalSubtitleFile = externalSubtitleFile
-        self.isExactMatch = isExactMatch
+        self.matchKind = matchKind
+        self.isVerified = isVerified ?? (matchKind == .exactFilename)
     }
 }
 
@@ -78,6 +96,19 @@ public enum EpisodePairing {
         #"\bv[0-4]\b"#,                                              // Release version v2
         #"[\(\[](19|20)\d{2}[\)\]]"#,                                 // Release year (2024)
     ]
+
+    /// True when two media files have the exact same filename or exact same filename stem
+    /// ignoring container extension (e.g. `Show - 01.mkv` and `Show - 01.mp4`).
+    public static func isExactFilenameMatch(source: URL, target: URL) -> Bool {
+        let srcName = source.lastPathComponent
+        let dstName = target.lastPathComponent
+        if srcName.caseInsensitiveCompare(dstName) == .orderedSame {
+            return true
+        }
+        let srcStem = source.deletingPathExtension().lastPathComponent
+        let dstStem = target.deletingPathExtension().lastPathComponent
+        return !srcStem.isEmpty && srcStem.caseInsensitiveCompare(dstStem) == .orderedSame
+    }
 
     public static func sanitizeFilename(_ filename: String) -> String {
         let stem = URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent
@@ -160,18 +191,18 @@ public enum EpisodePairing {
             $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
         }
 
+        var targetsByStem: [String: [URL]] = [:]
         var targetsByKey: [EpisodeKey: [URL]] = [:]
         var targetsByEpOnly: [Double: [URL]] = [:]
-        var unmatchedTargets: [URL] = []
 
         for url in sortedTargets {
+            let stem = url.deletingPathExtension().lastPathComponent.lowercased()
+            targetsByStem[stem, default: []].append(url)
             if let key = extractEpisodeKey(from: url.lastPathComponent) {
                 targetsByKey[key, default: []].append(url)
                 if key.specialTag == nil {
                     targetsByEpOnly[key.episode, default: []].append(url)
                 }
-            } else {
-                unmatchedTargets.append(url)
             }
         }
 
@@ -192,7 +223,7 @@ public enum EpisodePairing {
         var usedTargets: Set<URL> = []
         var usedSubs: Set<URL> = []
         var drafts: [PairedEpisodeDraft] = []
-        var unmatchedSources: [URL] = []
+        var remainingSourcesAfterExact: [URL] = []
 
         func claimSub(for src: URL, key: EpisodeKey?) -> URL? {
             let stem = src.deletingPathExtension().lastPathComponent.lowercased()
@@ -215,40 +246,66 @@ public enum EpisodePairing {
             return nil
         }
 
+        // Pass 1: Exact filename or exact stem matches -> automatically Verified.
         for src in sortedSources {
+            let stem = src.deletingPathExtension().lastPathComponent.lowercased()
+            if let candidates = targetsByStem[stem],
+               let dst = candidates.first(where: { !usedTargets.contains($0) && isExactFilenameMatch(source: src, target: $0) }) {
+                usedTargets.insert(dst)
+                let key = extractEpisodeKey(from: src.lastPathComponent)
+                drafts.append(
+                    PairedEpisodeDraft(
+                        episodeKey: key,
+                        sourceFile: src,
+                        targetFile: dst,
+                        externalSubtitleFile: claimSub(for: src, key: key),
+                        matchKind: .exactFilename,
+                        isVerified: true
+                    )
+                )
+            } else {
+                remainingSourcesAfterExact.append(src)
+            }
+        }
+
+        // Pass 2: Episode-number regex matches with differing filenames -> Unverified until confirmed.
+        var unmatchedSources: [URL] = []
+        for src in remainingSourcesAfterExact {
             guard let srcKey = extractEpisodeKey(from: src.lastPathComponent) else {
                 unmatchedSources.append(src)
                 continue
             }
 
-            // First try exact EpisodeKey match (season + episode + special).
             if let candidates = targetsByKey[srcKey],
                let dst = candidates.first(where: { !usedTargets.contains($0) }) {
                 usedTargets.insert(dst)
+                let exact = isExactFilenameMatch(source: src, target: dst)
                 drafts.append(
                     PairedEpisodeDraft(
                         episodeKey: srcKey,
                         sourceFile: src,
                         targetFile: dst,
                         externalSubtitleFile: claimSub(for: src, key: srcKey),
-                        isExactMatch: true
+                        matchKind: exact ? .exactFilename : .episodeRegex,
+                        isVerified: exact
                     )
                 )
                 continue
             }
 
-            // Fallback: match by episode number if one side includes S01 and the other does not.
             if srcKey.specialTag == nil,
                let candidates = targetsByEpOnly[srcKey.episode],
                let dst = candidates.first(where: { !usedTargets.contains($0) }) {
                 usedTargets.insert(dst)
+                let exact = isExactFilenameMatch(source: src, target: dst)
                 drafts.append(
                     PairedEpisodeDraft(
                         episodeKey: srcKey,
                         sourceFile: src,
                         targetFile: dst,
                         externalSubtitleFile: claimSub(for: src, key: srcKey),
-                        isExactMatch: true
+                        matchKind: exact ? .exactFilename : .episodeRegex,
+                        isVerified: exact
                     )
                 )
                 continue
@@ -257,13 +314,8 @@ public enum EpisodePairing {
             unmatchedSources.append(src)
         }
 
-        // Add remaining targets that were keyed but never matched.
-        for dst in sortedTargets where !usedTargets.contains(dst) && !unmatchedTargets.contains(dst) {
-            unmatchedTargets.append(dst)
-        }
-
-        // Pair leftover unmatched sources and targets positionally, flagging `isExactMatch = false`
-        // so the user spots and reviews them before running.
+        // Pass 3: Remaining unmatched sources and targets -> positional fallback, Unverified.
+        let unmatchedTargets = sortedTargets.filter { !usedTargets.contains($0) }
         let leftoverCount = max(unmatchedSources.count, unmatchedTargets.count)
         for i in 0..<leftoverCount {
             let s = i < unmatchedSources.count ? unmatchedSources[i] : nil
@@ -277,7 +329,8 @@ public enum EpisodePairing {
                     sourceFile: s,
                     targetFile: t,
                     externalSubtitleFile: sub,
-                    isExactMatch: false
+                    matchKind: .unmatched,
+                    isVerified: false
                 )
             )
         }
@@ -312,7 +365,6 @@ public enum EpisodePairing {
         var media: [URL] = []
         var subs: [URL] = []
         for case let fileURL as URL in enumerator {
-            // Skip already-merged output folders to prevent accidental re-ingestion.
             if fileURL.pathComponents.contains("Merged Files") {
                 continue
             }

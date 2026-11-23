@@ -8,7 +8,8 @@ import SushiGSKit
 final class EpisodeJob: Identifiable {
     let id: UUID
     var episodeBadge: String
-    var isExactMatch: Bool
+    var matchKind: PairMatchKind
+    var isVerified: Bool
 
     var sourceURL: URL?
     var targetURL: URL?
@@ -43,7 +44,8 @@ final class EpisodeJob: Identifiable {
     init(
         id: UUID = UUID(),
         episodeBadge: String = "",
-        isExactMatch: Bool = true,
+        matchKind: PairMatchKind = .episodeRegex,
+        isVerified: Bool = false,
         sourceURL: URL? = nil,
         targetURL: URL? = nil,
         externalSubtitleURL: URL? = nil,
@@ -54,7 +56,8 @@ final class EpisodeJob: Identifiable {
     ) {
         self.id = id
         self.episodeBadge = episodeBadge
-        self.isExactMatch = isExactMatch
+        self.matchKind = matchKind
+        self.isVerified = isVerified
         self.sourceURL = sourceURL
         self.targetURL = targetURL
         self.externalSubtitleURL = externalSubtitleURL
@@ -62,6 +65,10 @@ final class EpisodeJob: Identifiable {
         self.selectedSourceAudioID = selectedSourceAudioID
         self.selectedTargetAudioID = selectedTargetAudioID
         self.selectedSubtitleIDs = selectedSubtitleIDs
+    }
+
+    var isAutoVerifiedExactMatch: Bool {
+        matchKind == .exactFilename
     }
 
     var displayTitle: String {
@@ -83,6 +90,20 @@ final class EpisodeJob: Identifiable {
             return true
         }
         return externalSubtitleURL != nil
+    }
+
+    var hasAnyStateToClear: Bool {
+        sourceURL != nil
+            || targetURL != nil
+            || externalSubtitleURL != nil
+            || status != .pending
+            || !logs.isEmpty
+            || !warnings.isEmpty
+            || metrics != nil
+            || !syncedFiles.isEmpty
+            || mergedFilepath != nil
+            || errorMessage != nil
+            || probeError != nil
     }
 
     var canMergeManually: Bool {

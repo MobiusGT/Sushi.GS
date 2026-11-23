@@ -6,10 +6,11 @@ Bundled inside Sushi.GS.app/Contents/Resources/worker.py and executed using the
 app-managed uv Python 3.13 virtual environment under:
     ~/Library/Application Support/Sushi.GS/venv/
 
-This bridge delegates subtitle retiming, stream probing, pre-merge audio encoding,
-subtitle resampling, and MKV merging to upstream `sushi-batch` and `sushi-sub-next`
-without duplicating their internals, while streaming newline-delimited JSON (NDJSON)
-events over stdout and keeping execution strictly headless (no PyQt6 / no Dock icon).
+Delegates subtitle retiming, stream probing, pre-merge audio encoding, subtitle
+resampling, and MKV merging to upstream `sushi-batch` and `sushi-sub-next` while
+streaming NDJSON events, isolating all intermediate artifacts inside a dedicated
+per-job temp directory, and cleaning up subprocess groups and partial outputs
+cleanly upon cancellation.
 """
 
 from __future__ import annotations
@@ -37,10 +38,15 @@ os.environ.setdefault("QT_MAC_DISABLE_FOREGROUND_APPLICATION_TRANSFORM", "1")
 os.environ.setdefault("PYTHONUNBUFFERED", "1")
 os.environ.setdefault("MPLBACKEND", "Agg")
 
-# Track active child subprocesses so SIGTERM/SIGINT terminates cleanly.
+# Runtime cancellation & cleanup state
 _ACTIVE_PROCS: list[subprocess.Popen[Any]] = []
 _CANCELLED = False
+_CLEANING_UP = False
 _TEMP_SHIM_DIR: str | None = None
+_JOB_TEMP_DIR: str | None = None
+_PROTECTED_USER_PATHS: set[str] = set()
+_CREATED_OUTPUT_MANIFEST: list[str] = []
+_CREATED_DIRS: list[str] = []
 _LOG_LINE_INDEX = 0
 
 
@@ -63,23 +69,142 @@ def emit_log(source: str, line: str, level: str = "info") -> int:
     return idx
 
 
-def _handle_signal(signum: int, _frame: Any) -> None:
-    global _CANCELLED
-    _CANCELLED = True
-    for proc in list(_ACTIVE_PROCS):
+def _norm_path(p: str) -> str:
+    try:
+        return str(Path(p).resolve())
+    except OSError:
+        return os.path.abspath(p)
+
+
+def _register_protected_input(path: str | None) -> None:
+    if path:
+        _PROTECTED_USER_PATHS.add(_norm_path(path))
+
+
+def _register_output_for_cancel_cleanup(path: str) -> None:
+    """Track a newly planned output file so cancellation removes partial writes,
+    while NEVER registering files that already existed before the job started."""
+    norm = _norm_path(path)
+    if norm in _PROTECTED_USER_PATHS:
+        return
+    if not os.path.exists(path) and norm not in _CREATED_OUTPUT_MANIFEST:
+        _CREATED_OUTPUT_MANIFEST.append(norm)
+
+
+def _ensure_dir_tracked(directory: Path) -> None:
+    if not directory.exists():
+        directory.mkdir(parents=True, exist_ok=True)
+        _CREATED_DIRS.append(str(directory))
+
+
+def _terminate_active_process_groups() -> None:
+    procs = list(_ACTIVE_PROCS)
+    for proc in procs:
+        if proc.poll() is not None:
+            continue
         try:
-            proc.terminate()
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGTERM)
         except OSError:
-            pass
-    time.sleep(0.15)
-    for proc in list(_ACTIVE_PROCS):
-        if proc.poll() is None:
+            try:
+                proc.terminate()
+            except OSError:
+                pass
+
+    # Give process groups up to 0.75s to exit gracefully
+    deadline = time.monotonic() + 0.75
+    while time.monotonic() < deadline:
+        if all(p.poll() is not None for p in procs):
+            break
+        time.sleep(0.05)
+
+    for proc in procs:
+        if proc.poll() is not None:
+            continue
+        try:
+            pgid = os.getpgid(proc.pid)
+            os.killpg(pgid, signal.SIGKILL)
+        except OSError:
             try:
                 proc.kill()
             except OSError:
                 pass
+        try:
+            proc.wait(timeout=0.5)
+        except Exception:
+            pass
+
+
+def _cleanup_job_temp_dir() -> int:
+    global _JOB_TEMP_DIR
+    removed_files = 0
+    if _JOB_TEMP_DIR and os.path.isdir(_JOB_TEMP_DIR):
+        for _, _, files in os.walk(_JOB_TEMP_DIR):
+            removed_files += len(files)
+        shutil.rmtree(_JOB_TEMP_DIR, ignore_errors=True)
+        _JOB_TEMP_DIR = None
+    return removed_files
+
+
+def _cleanup_shims() -> None:
+    global _TEMP_SHIM_DIR
+    if _TEMP_SHIM_DIR and os.path.isdir(_TEMP_SHIM_DIR):
+        shutil.rmtree(_TEMP_SHIM_DIR, ignore_errors=True)
+        _TEMP_SHIM_DIR = None
+
+
+def _cleanup_cancelled_artifacts() -> tuple[int, list[str]]:
+    removed_temp_files = _cleanup_job_temp_dir()
+    removed_partials: list[str] = []
+
+    for path in list(_CREATED_OUTPUT_MANIFEST):
+        if path in _PROTECTED_USER_PATHS:
+            continue
+        if os.path.isfile(path):
+            try:
+                os.unlink(path)
+                removed_partials.append(Path(path).name)
+            except OSError:
+                pass
+
+    for created_dir in reversed(_CREATED_DIRS):
+        try:
+            if os.path.isdir(created_dir) and not os.listdir(created_dir):
+                os.rmdir(created_dir)
+        except OSError:
+            pass
+
+    _cleanup_shims()
+    return removed_temp_files, removed_partials
+
+
+def _handle_signal(signum: int, _frame: Any) -> None:
+    global _CANCELLED, _CLEANING_UP
+    if _CLEANING_UP:
+        return
+    _CANCELLED = True
+    _CLEANING_UP = True
+
+    _terminate_active_process_groups()
+    removed_temp, removed_partials = _cleanup_cancelled_artifacts()
+
+    if removed_partials:
+        partial_list = ", ".join(removed_partials)
+        emit_log(
+            "cleanup",
+            f"Cancelled cleanup: removed {removed_temp} temporary file(s) and {len(removed_partials)} partial output file(s) ({partial_list}). Source and target files untouched.",
+            level="info",
+        )
+    else:
+        emit_log(
+            "cleanup",
+            f"Cancelled cleanup: removed {removed_temp} temporary file(s); no partial output files remained. Source and target files untouched.",
+            level="info",
+        )
+
     emit("error", code="cancelled", message="Operation cancelled by user.")
-    sys.exit(130)
+    sys.stdout.flush()
+    os._exit(130)
 
 
 signal.signal(signal.SIGTERM, _handle_signal)
@@ -113,7 +238,6 @@ def configure_binary_path(
                     pass
             ordered_dirs.append(_TEMP_SHIM_DIR)
 
-    # Ensure venv bin dir (where `sushi` script lives) is on PATH.
     venv_bin = str(Path(sys.executable).resolve().parent)
     ordered_dirs.append(venv_bin)
 
@@ -134,13 +258,6 @@ def configure_binary_path(
     return ordered_dirs
 
 
-def _cleanup_shims() -> None:
-    global _TEMP_SHIM_DIR
-    if _TEMP_SHIM_DIR and os.path.isdir(_TEMP_SHIM_DIR):
-        shutil.rmtree(_TEMP_SHIM_DIR, ignore_errors=True)
-        _TEMP_SHIM_DIR = None
-
-
 def _pkg_version(name: str) -> str | None:
     try:
         return importlib.metadata.version(name)
@@ -156,7 +273,6 @@ def cmd_self_check(bin_dirs: list[str], tool_overrides: dict[str, str]) -> int:
             emit("error", code="python_version", message=f"Python 3.13+ required, found {py_ver}")
             return 1
 
-        # Import headless core modules only — never sushi_batch.ui.file_dialogs (PyQt6).
         import numpy as np
         import scipy
         import cv2
@@ -172,13 +288,11 @@ def cmd_self_check(bin_dirs: list[str], tool_overrides: dict[str, str]) -> int:
         import sushi_batch.external.sub_resample as sb_sub_resample
         import sushi_batch.services.stream_service as sb_stream_service
 
-        # Verify OpenCV template matching works headlessly without GUI initialization.
         haystack = np.zeros((1, 64), dtype=np.uint8)
         needle = np.zeros((1, 16), dtype=np.uint8)
         res = cv2.matchTemplate(haystack, needle, cv2.TM_SQDIFF_NORMED)
         _min_val, _, _min_loc, _ = cv2.minMaxLoc(res)
 
-        # Verify expected upstream symbols exist so upstream updates are validated cleanly.
         required_attrs = [
             (sb_settings, "config"),
             (sb_enums, "AudioEncodeCodec"),
@@ -196,7 +310,6 @@ def cmd_self_check(bin_dirs: list[str], tool_overrides: dict[str, str]) -> int:
             emit("error", code="api_incompatible", message=f"Missing upstream APIs: {', '.join(missing)}")
             return 1
 
-        # Confirm PyQt6 was NOT imported by any headless module.
         pyqt_loaded = any(k.startswith("PyQt6") for k in sys.modules)
 
         versions = {
@@ -244,7 +357,6 @@ def cmd_probe(filepath: str, bin_dirs: list[str], tool_overrides: dict[str, str]
             emit("error", code="ffprobe_missing", message="ffprobe is not installed.")
             return 1
 
-        # Probe streams, format duration, and chapters with ffprobe JSON.
         proc = subprocess.run(
             [
                 ffprobe_bin,
@@ -276,7 +388,6 @@ def cmd_probe(filepath: str, bin_dirs: list[str], tool_overrides: dict[str, str]
         fmt = raw.get("format", {})
         chapters = raw.get("chapters", [])
 
-        # Enrich with mkvmerge -J when probing MKV containers and mkvmerge is installed.
         mkv_track_names: dict[int, dict[str, Any]] = {}
         mkvmerge_bin = shutil.which("mkvmerge")
         if mkvmerge_bin and target.suffix.lower() in {".mkv", ".mka", ".mks", ".webm"}:
@@ -417,7 +528,8 @@ def _apply_upstream_settings(cfg: dict[str, Any], runtime_data_dir: str) -> None
     s.general["save_merge_logs"] = bool(general_cfg.get("saveMergeLogs", True))
 
     s.sync_workflow["use_high_quality_resample"] = bool(sync_cfg.get("useHighQualityResample", True))
-    s.sync_workflow["enable_sushi_advanced_args"] = bool(sync_cfg.get("enableAdvancedArgs", False))
+    # Always pass non-default Sushi parameters through cleanly so inline overrides always work.
+    s.sync_workflow["enable_sushi_advanced_args"] = True
     adv = sync_cfg.get("advancedArgs", {})
     s.sync_workflow["sushi_advanced_args"] = {
         "window": adv.get("window"),
@@ -443,7 +555,6 @@ def _apply_upstream_settings(cfg: dict[str, Any], runtime_data_dir: str) -> None
     chosen_codec = codec_map.get(str(encode_cfg.get("codec", "opus")).lower(), AudioEncodeCodec.OPUS)
     s.merge_workflow["encode_codec"] = chosen_codec
 
-    # Map per-codec profiles & bitrates cleanly into upstream encode_codec_settings
     profiles = encode_cfg.get("profiles", {})
     for codec_key, codec_enum in codec_map.items():
         profile = profiles.get(codec_key)
@@ -500,7 +611,6 @@ def _apply_upstream_settings(cfg: dict[str, Any], runtime_data_dir: str) -> None
     s.merge_synced_sub_file["trackname"] = str(sub_merge.get("customTrackTitle", "Synced Sub"))
 
 
-# Regex patterns derived directly from C1fer/sushi-next (`sushi/__init__.py` & `sushi/demux.py`).
 _RE_SHIFT_LINE = re.compile(
     r"^(\d+:\d{2}:\d{2}\.\d+)-(\d+:\d{2}:\d{2}\.\d+):\s*shift:\s*([+-]?\d+(?:\.\d+)?),\s*diff:\s*([+-]?\d+(?:\.\d+)?)"
 )
@@ -517,7 +627,7 @@ class ShiftTelemetryTracker:
 
     def __init__(self, max_safe_avg_shift: float = 5.0) -> None:
         self.max_safe_avg_shift = max_safe_avg_shift
-        self.shifts: list[tuple[int, str, float, float]] = []  # (line_idx, timestamp, shift, diff)
+        self.shifts: list[tuple[int, str, float, float]] = []
         self.group_avgs: list[tuple[int, float]] = []
         self.avg_shift: float | None = None
         self.broken_segments = 0
@@ -606,7 +716,6 @@ class ShiftTelemetryTracker:
             if jump > max_jump:
                 max_jump = jump
 
-        # Flag statistical high-diff anomalies (poor audio correlation).
         if median_diff is not None and diffs:
             high_diff_events = [
                 (idx, ts, d)
@@ -639,7 +748,6 @@ class ShiftTelemetryTracker:
 
 
 def _build_job_objects(payload: dict[str, Any], subtitle_target: dict[str, Any]):
-    """Construct upstream VideoSyncJob or AudioSyncJob from payload + probe info."""
     from sushi_batch.external.ffprobe import FFprobe
     from sushi_batch.models.enums import Task
     from sushi_batch.models.job.audio_sync_job import AudioSyncJob
@@ -669,7 +777,6 @@ def _build_job_objects(payload: dict[str, Any], subtitle_target: dict[str, Any])
     dst_video = StreamService.get_video_streams_from_probe(dst_probe["video"])
     dst_audio = StreamService.get_audio_streams_from_probe(dst_probe["audio"])
 
-    # Mark selected audio tracks.
     if src_audio:
         chosen = next((a for a in src_audio if a.id == src_audio_id), src_audio[0])
         chosen.selected = True
@@ -709,16 +816,14 @@ def _compute_synced_sub_path(
 
     dst = Path(dst_filepath)
     base_dir = Path(output_dir) if output_dir else dst.parent
-    base_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_dir_tracked(base_dir)
 
     if total_sub_targets <= 1 and not output_dir:
-        # Exact upstream sushi-batch default: `<dst_filepath>.sushi<ext>`
         return f"{dst_filepath}.sushi{ext}"
 
     if total_sub_targets <= 1:
         return str(base_dir / f"{dst.name}.sushi{ext}")
 
-    # Distinct filenames when syncing multiple embedded subtitle tracks for one episode.
     if subtitle_target["kind"] == "embedded":
         tid = subtitle_target.get("streamId", 0)
         lang = subtitle_target.get("lang") or "und"
@@ -732,16 +837,14 @@ def _build_sushi_command(
     job: Any,
     subtitle_target: dict[str, Any],
     output_sub_path: str,
-    use_explicit_output: bool,
+    job_temp_dir: str,
 ) -> list[str]:
     from sushi_batch.external.sub_sync import Sushi
     from sushi_batch.models import settings as sb_settings
 
     sync_cfg = payload.get("settings", {}).get("sync", {})
-    use_advanced = bool(sync_cfg.get("enableAdvancedArgs", False))
 
     if subtitle_target["kind"] == "external":
-        # External subtitle (supports both video and audio containers!).
         args = [
             sys.executable,
             "-u",
@@ -760,14 +863,15 @@ def _build_sushi_command(
             args.extend(["--dst-audio", str(payload["dstAudioStreamId"])])
         if sb_settings.config.sync_workflow["use_high_quality_resample"]:
             args.extend(["--sample-rate", "24000"])
-        if use_advanced:
-            Sushi._add_advanced_args(args)
+        Sushi._add_advanced_args(args)
     else:
-        upstream_args = Sushi._get_args(job, use_advanced_args=use_advanced)
-        # Replace bare `sushi` script name with current venv python -m sushi for zero PATH ambiguity.
+        upstream_args = Sushi._get_args(job, use_advanced_args=True)
         args = [sys.executable, "-u", "-m", "sushi", *upstream_args[1:]]
 
-    # Extended sushi-next options supported cleanly.
+    # Always isolate intermediate demuxed WAV/subtitle/chapter/keyframe files into job_temp_dir,
+    # and explicitly route the final output script to output_sub_path.
+    args.extend(["--temp-dir", job_temp_dir, "-o", output_sub_path])
+
     custom_sr = sync_cfg.get("customSampleRate")
     if custom_sr and "--sample-rate" not in args:
         args.extend(["--sample-rate", str(custom_sr)])
@@ -805,9 +909,6 @@ def _build_sushi_command(
         if sync_cfg.get("dstFps"):
             args.extend(["--dst-fps", str(sync_cfg["dstFps"])])
 
-    if use_explicit_output:
-        args.extend(["-o", output_sub_path])
-
     if sync_cfg.get("verboseLogging", False):
         args.append("-v")
 
@@ -827,12 +928,15 @@ def _stream_subprocess(
         encoding="utf-8",
         errors="replace",
         bufsize=1,
+        start_new_session=True,
     )
     _ACTIVE_PROCS.append(proc)
     lines: list[str] = []
     try:
         assert proc.stdout is not None
         for raw_line in proc.stdout:
+            if _CANCELLED:
+                break
             line = raw_line.rstrip("\r\n")
             lines.append(line)
             if on_line is not None:
@@ -846,12 +950,12 @@ def _stream_subprocess(
 
 def _encode_audio_tracks(
     job: Any,
+    job_temp_dir: str,
     tracker: ShiftTelemetryTracker,
     log_accumulator: list[str],
 ) -> list[str]:
-    """Encode lossless destination audio tracks using upstream sushi_batch codec profiles."""
+    """Encode lossless destination audio tracks into the isolated per-job temp directory."""
     from sushi_batch.external.ffmpeg import FFmpeg
-    from sushi_batch.external.opusenc import XiphOpusEncoder
     from sushi_batch.models import settings as sb_settings
     from sushi_batch.models.enums import AudioChannelLayout, AudioEncodeCodec, AudioEncoder, TracksToEncode
     from sushi_batch.utils.constants import FFPROBE_CHANNEL_LAYOUT_MAP
@@ -870,6 +974,8 @@ def _encode_audio_tracks(
 
     encoded_files: list[str] = []
     for stream in stream_list:
+        if _CANCELLED:
+            break
         if not FFmpeg.is_audio_encode_needed(stream, spinner=None, log_path=None):
             continue
 
@@ -894,18 +1000,18 @@ def _encode_audio_tracks(
                 AudioChannelLayout.STEREO,
             )
             bitrate = merge_wf["encode_codec_settings"][AudioEncodeCodec.OPUS.name]["bitrates"][layout_enum.name]
-            out_path = f"{job.dst_filepath}_track{stream.id}_encode.opus"
+            out_path = str(Path(job_temp_dir) / f"track{stream.id}_encode.opus")
             pipe_args = FFmpeg.get_pcm_pipe_args(job.dst_filepath, stream.id)
             enc_args = ["opusenc", "--bitrate", bitrate.replace("k", ""), "--vbr", "-", out_path]
             emit_log("opusenc", f"Running: {' '.join(pipe_args)} | {' '.join(enc_args)}", level="info")
 
-            # Use binary pipes for raw WAV PCM streaming into opusenc.
-            ff_proc = subprocess.Popen(pipe_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            ff_proc = subprocess.Popen(pipe_args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
             op_proc = subprocess.Popen(
                 enc_args,
                 stdin=ff_proc.stdout,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
+                start_new_session=True,
             )
             _ACTIVE_PROCS.extend([ff_proc, op_proc])
             try:
@@ -938,11 +1044,13 @@ def _encode_audio_tracks(
                 if selected_encoder == AudioEncoder.XIPH_OPUSENC
                 else selected_encoder
             )
-            args, out_path, selected_bitrate = FFmpeg._get_audio_encode_args(
+            args, _default_out, selected_bitrate = FFmpeg._get_audio_encode_args(
                 job.dst_filepath, stream, selected_codec, effective_encoder, "[FFmpeg]"
             )
+            out_path = str(Path(job_temp_dir) / f"track{stream.id}_encode.mka")
+            args[-1] = out_path
             emit_log("ffmpeg", f"Running: {' '.join(args)}", level="info")
-            rc, enc_lines = _stream_subprocess(
+            rc, _ = _stream_subprocess(
                 args,
                 "ffmpeg",
                 on_line=lambda line: (log_accumulator.append(line), emit_log("ffmpeg", line, level="info")),
@@ -964,11 +1072,12 @@ def _encode_audio_tracks(
 
 def _resample_subtitles(
     job: Any,
+    job_temp_dir: str,
     synced_outputs: list[dict[str, Any]],
     tracker: ShiftTelemetryTracker,
     log_accumulator: list[str],
 ) -> list[str]:
-    """Resample synced ASS/SSA subtitles to match target video resolution when Aegisub-CLI is available."""
+    """Resample synced ASS/SSA subtitles into the isolated per-job temp directory."""
     from sushi_batch.external.sub_resample import SubResampler
     from sushi_batch.models import settings as sb_settings
 
@@ -989,7 +1098,9 @@ def _resample_subtitles(
     target_res = (dst_video.width, dst_video.height)
     generated_resampled: list[str] = []
 
-    for item in synced_outputs:
+    for idx_out, item in enumerate(synced_outputs):
+        if _CANCELLED:
+            break
         sub_path = item["syncedPath"]
         ext = Path(sub_path).suffix.lower()
         if ext not in {".ass", ".ssa"}:
@@ -1006,7 +1117,7 @@ def _resample_subtitles(
             continue
 
         emit("stage", stage="resampling_subs", detail=f"Resampling {Path(sub_path).name} to {target_res[0]}x{target_res[1]}")
-        resampled_path = str(Path(sub_path).with_suffix("")) + "_resampled" + ext
+        resampled_path = str(Path(job_temp_dir) / f"sub{idx_out}_resampled{ext}")
         args = [
             "aegisub-cli",
             sub_path,
@@ -1038,7 +1149,6 @@ def _run_mkvmerge(
     tracker: ShiftTelemetryTracker,
     log_accumulator: list[str],
 ) -> tuple[str | None, bool]:
-    """Build MKVMerge arguments via upstream sushi_batch helpers and execute with live progress."""
     from sushi_batch.external.mkv_merge import MKVMerge
     from sushi_batch.models import settings as sb_settings
 
@@ -1048,21 +1158,17 @@ def _run_mkvmerge(
         return None, False
 
     output_dir_override = payload.get("outputDir")
-    if output_dir_override:
-        dst_path = Path(job.dst_filepath)
-        out_dir = Path(output_dir_override) / "Merged Files"
-        out_dir.mkdir(parents=True, exist_ok=True)
-        candidate = out_dir / f"{dst_path.stem}.mkv"
-        counter = 1
-        while candidate.exists():
-            candidate = out_dir / f"{dst_path.stem} ({counter}).mkv"
-            counter += 1
-        output_file = str(candidate)
-    else:
-        output_file = MKVMerge._get_out_filepath(job.dst_filepath)
-        # Ensure .mkv output container if target was e.g. .mp4
-        if Path(output_file).suffix.lower() != ".mkv":
-            output_file = str(Path(output_file).with_suffix(".mkv"))
+    dst_path = Path(job.dst_filepath)
+    out_dir = (Path(output_dir_override) if output_dir_override else dst_path.parent) / "Merged Files"
+    _ensure_dir_tracked(out_dir)
+
+    candidate = out_dir / f"{dst_path.stem}.mkv"
+    counter = 1
+    while candidate.exists():
+        candidate = out_dir / f"{dst_path.stem} ({counter}).mkv"
+        counter += 1
+    output_file = str(candidate)
+    _register_output_for_cancel_cleanup(output_file)
 
     args: list[str] = ["mkvmerge", "--output", output_file]
     MKVMerge._add_source_file_args(args, job.src_filepath)
@@ -1140,6 +1246,7 @@ def _save_text_log(logs_dir: str, category: str, src_or_dst: str, lines: list[st
 
 
 def cmd_run_job(payload: dict[str, Any]) -> int:
+    global _JOB_TEMP_DIR
     bin_dirs = payload.get("binDirs", [])
     tool_overrides = payload.get("toolOverrides", {})
     runtime_data_dir = payload.get("runtimeDataDir") or str(
@@ -1149,13 +1256,24 @@ def cmd_run_job(payload: dict[str, Any]) -> int:
         Path.home() / "Library" / "Application Support" / "Sushi.GS" / "logs"
     )
 
+    # Protect all pre-existing user files from ever being modified or removed.
+    _register_protected_input(payload.get("srcFilepath"))
+    _register_protected_input(payload.get("dstFilepath"))
+    for st in payload.get("subtitleTargets", []):
+        if st.get("kind") == "external":
+            _register_protected_input(st.get("filepath"))
+    for ex in payload.get("existingSyncedOutputs", []):
+        _register_protected_input(ex.get("syncedPath"))
+
+    _JOB_TEMP_DIR = tempfile.mkdtemp(prefix="sushigs-job-")
     configure_binary_path(bin_dirs, tool_overrides)
+
     try:
         _apply_upstream_settings(payload.get("settings", {}), runtime_data_dir)
         from sushi_batch.external.sub_sync import Sushi
         from sushi_batch.models import settings as sb_settings
 
-        mode = payload.get("mode", "sync")  # "sync" or "merge"
+        mode = payload.get("mode", "sync")
         subtitle_targets: list[dict[str, Any]] = payload.get("subtitleTargets", [])
         if not subtitle_targets:
             emit("error", code="no_subtitles", message="No subtitle track or external subtitle file selected.")
@@ -1167,7 +1285,6 @@ def cmd_run_job(payload: dict[str, Any]) -> int:
         sushi_log_lines: list[str] = []
         merge_log_lines: list[str] = []
 
-        # Build primary upstream job object (VideoSyncJob / AudioSyncJob).
         primary_job = _build_job_objects(payload, subtitle_targets[0])
 
         if mode == "sync":
@@ -1177,8 +1294,8 @@ def cmd_run_job(payload: dict[str, Any]) -> int:
                 out_sub_path = _compute_synced_sub_path(
                     payload["dstFilepath"], sub_target, total, output_dir
                 )
-                use_explicit_output = (total > 1) or (output_dir is not None)
-                args = _build_sushi_command(payload, job, sub_target, out_sub_path, use_explicit_output)
+                _register_output_for_cancel_cleanup(out_sub_path)
+                args = _build_sushi_command(payload, job, sub_target, out_sub_path, _JOB_TEMP_DIR)
 
                 label = sub_target.get("title") or sub_target.get("lang") or f"Track {idx_sub + 1}"
                 emit("stage", stage="demuxing", detail=f"Syncing subtitle {idx_sub + 1}/{total}: {label}")
@@ -1186,8 +1303,6 @@ def cmd_run_job(payload: dict[str, Any]) -> int:
                 span_frac = 0.72 / float(max(total, 1))
                 emit("progress", fraction=base_frac + 0.03 * span_frac, stage="demuxing")
                 emit_log("sushi", f"Running: {' '.join(args)}", level="info")
-
-                state = {"stage": "demuxing"}
 
                 def _on_sushi_line(line: str) -> None:
                     sushi_log_lines.append(line)
@@ -1202,19 +1317,15 @@ def cmd_run_job(payload: dict[str, Any]) -> int:
                     tracker.feed_line(line, l_idx)
 
                     if "---demuxing---" in lower:
-                        state["stage"] = "demuxing"
                         emit("stage", stage="demuxing", detail="Extracting audio and subtitle streams")
                         emit("progress", fraction=base_frac + 0.10 * span_frac, stage="demuxing")
                     elif "loading wav:" in lower:
-                        state["stage"] = "loading_audio"
                         emit("stage", stage="loading_audio", detail="Loading and resampling audio waveforms")
                         emit("progress", fraction=base_frac + 0.25 * span_frac, stage="loading_audio")
                     elif "---calculating shifts---" in lower:
-                        state["stage"] = "calculating_shifts"
                         emit("stage", stage="calculating_shifts", detail="Matching audio patterns")
                         emit("progress", fraction=base_frac + 0.45 * span_frac, stage="calculating_shifts")
                     elif "---grouping and smoothing---" in lower:
-                        state["stage"] = "grouping"
                         emit("stage", stage="grouping", detail="Grouping and smoothing subtitle shifts")
                         emit("progress", fraction=base_frac + 0.85 * span_frac, stage="grouping")
                     elif line.startswith("Done in "):
@@ -1237,7 +1348,6 @@ def cmd_run_job(payload: dict[str, Any]) -> int:
                     emit("error", code="sushi_failed", message=err_msg)
                     return rc
 
-                # Locate generated subtitle file (handle .ssa -> .ass fallback).
                 actual_path = out_sub_path
                 if not Path(actual_path).is_file():
                     alt_ass = str(Path(out_sub_path).with_suffix(".ass"))
@@ -1260,7 +1370,6 @@ def cmd_run_job(payload: dict[str, Any]) -> int:
             if sb_settings.config.general["save_sushi_logs"]:
                 sushi_log_path = _save_text_log(logs_dir, "Sushi Logs", payload["srcFilepath"], sushi_log_lines)
         else:
-            # Manual merge mode: reuse already-synced output paths from payload.
             metrics = {}
             sushi_log_path = None
             for existing in payload.get("existingSyncedOutputs", []):
@@ -1275,22 +1384,17 @@ def cmd_run_job(payload: dict[str, Any]) -> int:
                     }
                 )
 
-        # Merge step if manual merge requested OR auto-merge enabled on video target.
         should_merge = (mode == "merge") or bool(
             sb_settings.config.merge_workflow["merge_files_after_execution"]
         )
         merged_filepath: str | None = None
         merge_succeeded = False
         merge_log_path: str | None = None
-        temp_generated_files: list[str] = []
 
         if should_merge and hasattr(primary_job, "dst_streams") and primary_job.dst_streams.video:
             emit("progress", fraction=0.74, stage="encoding_audio")
-            encoded_audio = _encode_audio_tracks(primary_job, tracker, merge_log_lines)
-            temp_generated_files.extend(encoded_audio)
-
-            resampled_subs = _resample_subtitles(primary_job, synced_outputs, tracker, merge_log_lines)
-            temp_generated_files.extend(resampled_subs)
+            _encode_audio_tracks(primary_job, _JOB_TEMP_DIR, tracker, merge_log_lines)
+            _resample_subtitles(primary_job, _JOB_TEMP_DIR, synced_outputs, tracker, merge_log_lines)
 
             merged_filepath, merge_succeeded = _run_mkvmerge(
                 payload, primary_job, synced_outputs, tracker, merge_log_lines
@@ -1300,11 +1404,11 @@ def cmd_run_job(payload: dict[str, Any]) -> int:
                 merge_log_path = _save_text_log(logs_dir, "Merge Logs", payload["dstFilepath"], merge_log_lines)
 
             if merge_succeeded and sb_settings.config.merge_workflow["delete_generated_files_after_merge"]:
-                emit("stage", stage="cleaning_up", detail="Removing temporary generated subtitle/audio files")
+                emit("stage", stage="cleaning_up", detail="Removing generated subtitle files after merge")
                 for item in synced_outputs:
-                    Path(item["syncedPath"]).unlink(missing_ok=True)
-                for p in temp_generated_files:
-                    Path(p).unlink(missing_ok=True)
+                    p_norm = _norm_path(item["syncedPath"])
+                    if p_norm not in _PROTECTED_USER_PATHS:
+                        Path(item["syncedPath"]).unlink(missing_ok=True)
         elif should_merge:
             emit_log("mkvmerge", "Target file has no video track; skipped MKV merge.", level="info")
 
@@ -1327,6 +1431,8 @@ def cmd_run_job(payload: dict[str, Any]) -> int:
         emit("error", code="worker_exception", message=f"{type(exc).__name__}: {exc}")
         return 1
     finally:
+        # Always remove isolated intermediate temp workspace and PATH shims on normal exit.
+        _cleanup_job_temp_dir()
         _cleanup_shims()
 
 

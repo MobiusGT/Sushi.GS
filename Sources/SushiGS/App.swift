@@ -57,10 +57,17 @@ struct SushiGSApp: App {
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
 
-                Button("Open Batch Folders…") {
-                    model.openBatchFoldersWorkflow()
+                Button("Add Source Folder…") {
+                    model.pickBatchSourceFolder(replaceExisting: !model.isBatchInQueueStage)
                 }
                 .keyboardShortcut("o", modifiers: [.command, .option])
+                .disabled(menuState.isRunning)
+
+                Button("Add Target Folder…") {
+                    model.pickBatchTargetFolder(replaceExisting: !model.isBatchInQueueStage)
+                }
+                .keyboardShortcut("o", modifiers: [.command, .option, .shift])
+                .disabled(menuState.isRunning)
 
                 Divider()
 
@@ -110,6 +117,11 @@ struct SushiGSApp: App {
 
                 Divider()
 
+                Button(menuState.unverifiedBatchCount > 0 ? "Verify All Pairs (\(menuState.unverifiedBatchCount))" : "Verify All Pairs") {
+                    model.verifyAllBatchPairs()
+                }
+                .disabled(menuState.unverifiedBatchCount == 0)
+
                 Button("Retry Failed or Warned") {
                     model.retryFailedOrWarned()
                 }
@@ -121,6 +133,19 @@ struct SushiGSApp: App {
                 }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
                 .disabled(!menuState.canMerge)
+
+                Divider()
+
+                Button("Clear Single Episode") {
+                    model.clearSingleEpisode()
+                }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
+                .disabled(!menuState.canClearSingle)
+
+                Button("Clear Batch Queue…") {
+                    model.requestClearBatchQueue()
+                }
+                .disabled(!menuState.canClearBatch)
 
                 Divider()
 

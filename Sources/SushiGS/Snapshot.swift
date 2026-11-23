@@ -35,6 +35,22 @@ enum Snapshot {
                     try? await Task.sleep(for: .seconds(0.8))
                     capture(to: "\(dir)/\(page.rawValue)-\(mode).png")
                 }
+
+                if only == nil || only?.contains("singleEpisodeEmpty") == true {
+                    model.clearSingleEpisode()
+                    model.sidebar = .singleEpisode
+                    try? await Task.sleep(for: .seconds(0.8))
+                    capture(to: "\(dir)/singleEpisodeEmpty-\(mode).png")
+                    SeedData.populate(model: model)
+                }
+
+                if only == nil || only?.contains("batchIntakeOneFolder") == true {
+                    SeedData.configureOneFolderBatchIntake(model: model)
+                    model.sidebar = .batchQueue
+                    try? await Task.sleep(for: .seconds(0.8))
+                    capture(to: "\(dir)/batchIntakeOneFolder-\(mode).png")
+                    SeedData.populate(model: model)
+                }
             }
 
             if only == nil || only?.contains("settings") == true {

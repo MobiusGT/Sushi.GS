@@ -102,6 +102,9 @@ final class MenuState: ObservableObject {
     @Published var isPaused = false
     @Published var canRetry = false
     @Published var canMerge = false
+    @Published var canClearSingle = false
+    @Published var canClearBatch = false
+    @Published var unverifiedBatchCount = 0
     @Published var hasLogs = false
     @Published var selectedBatchCount = 0
 }
@@ -136,9 +139,15 @@ final class AppModel {
     // Single Episode workspace
     var singleJob = EpisodeJob(episodeBadge: "Single")
 
-    // Batch Queue workspace
+    // Batch Queue two-folder intake & Stage 2 queue state
     var batchSourceFolder: URL?
     var batchTargetFolder: URL?
+    var stagedSourceMedia: [URL] = []
+    var stagedSourceSubtitles: [URL] = []
+    var stagedTargetMedia: [URL] = []
+    var isBatchInQueueStage = false {
+        didSet { syncMenuState() }
+    }
     var batchJobs: [EpisodeJob] = [] {
         didSet { syncMenuState() }
     }
@@ -156,8 +165,10 @@ final class AppModel {
     private(set) var isPaused = false {
         didSet { syncMenuState() }
     }
+    private(set) var isCancelling = false
     private(set) var activeJobID: UUID?
     @ObservationIgnored private var runningTask: Task<Void, Never>?
+    @ObservationIgnored private var cancelRequested = false
 
     // Global log stream across all runs
     var globalLogs: [LogEntry] = [] {
@@ -165,8 +176,9 @@ final class AppModel {
     }
     @ObservationIgnored private var globalLineCounter = 0
 
-    // Transient alert/toast feedback
+    // Transient alert/toast feedback & confirmation sheets
     var statusNotice: String?
+    var showClearBatchConfirmation = false
 
     init(paths: AppPaths = AppPaths.current()) {
         self.paths = paths
@@ -232,11 +244,48 @@ final class AppModel {
                 let done = batchJobs.filter { $0.status == .succeeded || $0.status == .warned }.count
                 return isPaused ? "Batch Paused · \(done)/\(batchJobs.count)" : "Syncing \(done + 1) of \(batchJobs.count)…"
             }
+            if !isBatchInQueueStage {
+                if hasStagedSource && !hasStagedTarget {
+                    return "Batch Setup · Source Ready"
+                }
+                if !hasStagedSource && hasStagedTarget {
+                    return "Batch Setup · Target Ready"
+                }
+                return "Batch Queue"
+            }
             let count = batchJobs.count
             return count == 0 ? "Batch Queue" : "\(count) \(count == 1 ? "Episode" : "Episodes") Queued"
         case .dependencies:
             let missing = dependencies.missingRequiredDependencies.count
             return missing == 0 ? "Dependencies Ready" : "\(missing) Required Missing"
+        }
+    }
+
+    // MARK: - Batch Intake & Verification Computed Helpers
+
+    var hasStagedSource: Bool {
+        batchSourceFolder != nil || !stagedSourceMedia.isEmpty
+    }
+
+    var hasStagedTarget: Bool {
+        batchTargetFolder != nil || !stagedTargetMedia.isEmpty
+    }
+
+    var unverifiedBatchCount: Int {
+        batchJobs.filter { !$0.isVerified && $0.sourceURL != nil && $0.targetURL != nil }.count
+    }
+
+    var batchNeedsClearConfirmation: Bool {
+        isRunning || batchJobs.contains(where: { $0.status == .pending || $0.status == .running })
+    }
+
+    func requestClearBatchQueue() {
+        guard !isRunning else { return }
+        if batchNeedsClearConfirmation {
+            sidebar = .batchQueue
+            showClearBatchConfirmation = true
+        } else {
+            clearBatchQueue()
         }
     }
 
@@ -310,7 +359,7 @@ final class AppModel {
         savePresets()
     }
 
-    // MARK: - Single Episode File & Track Inspection
+    // MARK: - Single Episode File, Track Inspection & Clean-Slate Clear
 
     func setSingleSource(_ url: URL) {
         singleJob.sourceURL = url
@@ -341,7 +390,11 @@ final class AppModel {
     }
 
     func clearSingleEpisode() {
+        guard !isRunning else { return }
         singleJob = EpisodeJob(episodeBadge: "Single")
+        highlightedLogID = nil
+        highlightedLineIndex = nil
+        statusNotice = "Cleared Single Episode workspace"
         syncMenuState()
     }
 
@@ -386,46 +439,24 @@ final class AppModel {
         }
     }
 
-    // MARK: - Batch Pairing & Track Probing
+    // MARK: - Batch Two-Folder Intake, Stage 2 Additions & Pair Verification
 
-    func loadBatchFromFolders(sourceFolder: URL, targetFolder: URL) {
-        batchSourceFolder = sourceFolder
-        batchTargetFolder = targetFolder
-        let srcScan = EpisodePairing.scanMediaFiles(in: sourceFolder)
-        let dstScan = EpisodePairing.scanMediaFiles(in: targetFolder)
-        ingestBatchFiles(sources: srcScan.media, targets: dstScan.media, externalSubtitles: srcScan.subtitles)
-    }
-
-    func ingestBatchFiles(sources: [URL], targets: [URL], externalSubtitles: [URL] = []) {
-        let drafts = EpisodePairing.pairFiles(sources: sources, targets: targets, externalSubtitles: externalSubtitles)
-        let newJobs: [EpisodeJob] = drafts.enumerated().map { idx, draft in
-            EpisodeJob(
-                episodeBadge: draft.episodeKey?.displayBadge ?? String(format: "#%02d", idx + 1),
-                isExactMatch: draft.isExactMatch,
-                sourceURL: draft.sourceFile,
-                targetURL: draft.targetFile,
-                externalSubtitleURL: draft.externalSubtitleFile,
-                useExternalSubtitle: draft.externalSubtitleFile != nil
-            )
-        }
-        batchJobs = newJobs
-        if let first = newJobs.first {
-            selectedBatchJobIDs = [first.id]
-        }
-        Task { await probeAllBatchJobs() }
-    }
-
-    func addDroppedBatchFiles(_ urls: [URL], asSource: Bool) {
+    /// Stage 1 / Stage 2 intake handler.
+    /// In Stage 1, staging a single side keeps the user on the intake view with a filled/ready card
+    /// and transitions automatically to Stage 2 only once BOTH Source and Target have media.
+    func stageBatchInput(_ urls: [URL], asSource: Bool, replaceExisting: Bool = false) {
         var media: [URL] = []
         var subs: [URL] = []
+        var pickedFolder: URL?
         let fm = FileManager.default
+
         for url in urls {
             var isDir: ObjCBool = false
             if fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
+                pickedFolder = url
                 let scanned = EpisodePairing.scanMediaFiles(in: url)
                 media.append(contentsOf: scanned.media)
                 subs.append(contentsOf: scanned.subtitles)
-                if asSource { batchSourceFolder = url } else { batchTargetFolder = url }
             } else {
                 let ext = url.pathExtension.lowercased()
                 if EpisodePairing.mediaExtensions.contains(ext) {
@@ -436,15 +467,134 @@ final class AppModel {
             }
         }
 
-        let existingSources = batchJobs.compactMap(\.sourceURL)
-        let existingTargets = batchJobs.compactMap(\.targetURL)
-        let existingSubs = batchJobs.compactMap(\.externalSubtitleURL)
+        if asSource {
+            if replaceExisting || !isBatchInQueueStage {
+                batchSourceFolder = pickedFolder ?? (media.count == 1 ? nil : batchSourceFolder)
+                stagedSourceMedia = uniqueURLs(replaceExisting ? media : (isBatchInQueueStage ? stagedSourceMedia + media : media))
+                stagedSourceSubtitles = uniqueURLs(replaceExisting ? subs : (isBatchInQueueStage ? stagedSourceSubtitles + subs : subs))
+            } else {
+                if let pickedFolder { batchSourceFolder = pickedFolder }
+                stagedSourceMedia = uniqueURLs(stagedSourceMedia + media)
+                stagedSourceSubtitles = uniqueURLs(stagedSourceSubtitles + subs)
+            }
+        } else {
+            if replaceExisting || !isBatchInQueueStage {
+                batchTargetFolder = pickedFolder ?? (media.count == 1 ? nil : batchTargetFolder)
+                stagedTargetMedia = uniqueURLs(replaceExisting ? media : (isBatchInQueueStage ? stagedTargetMedia + media : media))
+            } else {
+                if let pickedFolder { batchTargetFolder = pickedFolder }
+                stagedTargetMedia = uniqueURLs(stagedTargetMedia + media)
+            }
+        }
 
-        let combinedSources = asSource ? uniqueURLs(existingSources + media) : existingSources
-        let combinedTargets = asSource ? existingTargets : uniqueURLs(existingTargets + media)
-        let combinedSubs = uniqueURLs(existingSubs + subs)
+        // Transition to Stage 2 ONLY once both Source and Target are populated (or if already in Stage 2).
+        if isBatchInQueueStage || (hasStagedSource && hasStagedTarget) {
+            rebuildBatchPairsPreservingVerification()
+            isBatchInQueueStage = true
+        }
+        syncMenuState()
+    }
 
-        ingestBatchFiles(sources: combinedSources, targets: combinedTargets, externalSubtitles: combinedSubs)
+    func clearBatchSourceIntake() {
+        batchSourceFolder = nil
+        stagedSourceMedia = []
+        stagedSourceSubtitles = []
+        syncMenuState()
+    }
+
+    func clearBatchTargetIntake() {
+        batchTargetFolder = nil
+        stagedTargetMedia = []
+        syncMenuState()
+    }
+
+    func pickBatchSourceFolder(replaceExisting: Bool = false) {
+        guard let folder = pickFolder(title: "Select Source Folder") else { return }
+        sidebar = .batchQueue
+        stageBatchInput([folder], asSource: true, replaceExisting: replaceExisting)
+    }
+
+    func pickBatchTargetFolder(replaceExisting: Bool = false) {
+        guard let folder = pickFolder(title: "Select Target Folder") else { return }
+        sidebar = .batchQueue
+        stageBatchInput([folder], asSource: false, replaceExisting: replaceExisting)
+    }
+
+    func clearBatchQueue() {
+        guard !isRunning else { return }
+        batchJobs = []
+        selectedBatchJobIDs = []
+        batchSourceFolder = nil
+        batchTargetFolder = nil
+        stagedSourceMedia = []
+        stagedSourceSubtitles = []
+        stagedTargetMedia = []
+        isBatchInQueueStage = false
+        highlightedLogID = nil
+        highlightedLineIndex = nil
+        statusNotice = "Cleared Batch Queue"
+        syncMenuState()
+    }
+
+    private func rebuildBatchPairsPreservingVerification() {
+        // Preserve manual verification and already-completed state for unchanged (source, target) pairs.
+        var existingByPair: [String: EpisodeJob] = [:]
+        for job in batchJobs {
+            if let s = job.sourceURL?.path, let t = job.targetURL?.path {
+                existingByPair["\(s)|\(t)"] = job
+            }
+        }
+
+        let allSources = uniqueURLs(stagedSourceMedia + batchJobs.compactMap(\.sourceURL))
+        let allTargets = uniqueURLs(stagedTargetMedia + batchJobs.compactMap(\.targetURL))
+        let allSubs = uniqueURLs(stagedSourceSubtitles + batchJobs.compactMap(\.externalSubtitleURL))
+
+        let drafts = EpisodePairing.pairFiles(sources: allSources, targets: allTargets, externalSubtitles: allSubs)
+        let rebuilt: [EpisodeJob] = drafts.enumerated().map { idx, draft in
+            if let s = draft.sourceFile?.path, let t = draft.targetFile?.path,
+               let preserved = existingByPair["\(s)|\(t)"] {
+                return preserved
+            }
+            return EpisodeJob(
+                episodeBadge: draft.episodeKey?.displayBadge ?? String(format: "#%02d", idx + 1),
+                matchKind: draft.matchKind,
+                isVerified: draft.isVerified,
+                sourceURL: draft.sourceFile,
+                targetURL: draft.targetFile,
+                externalSubtitleURL: draft.externalSubtitleFile,
+                useExternalSubtitle: draft.externalSubtitleFile != nil
+            )
+        }
+        batchJobs = rebuilt
+        if selectedBatchJobIDs.isEmpty, let first = rebuilt.first {
+            selectedBatchJobIDs = [first.id]
+        }
+        Task { await probeAllBatchJobs() }
+    }
+
+    func toggleVerification(for job: EpisodeJob) {
+        job.isVerified.toggle()
+        syncMenuState()
+    }
+
+    func markVerified(_ job: EpisodeJob) {
+        job.isVerified = true
+        if let src = job.sourceURL, let dst = job.targetURL, EpisodePairing.isExactFilenameMatch(source: src, target: dst) {
+            job.matchKind = .exactFilename
+        }
+        syncMenuState()
+    }
+
+    func verifyAllBatchPairs() {
+        var changed = 0
+        for job in batchJobs where !job.isVerified && job.sourceURL != nil && job.targetURL != nil {
+            job.isVerified = true
+            changed += 1
+        }
+        if changed > 0 {
+            statusNotice = "Verified \(changed) episode \(changed == 1 ? "pair" : "pairs")"
+        }
+        syncMenuState()
     }
 
     private func uniqueURLs(_ urls: [URL]) -> [URL] {
@@ -453,7 +603,7 @@ final class AppModel {
     }
 
     func probeAllBatchJobs() async {
-        for job in batchJobs {
+        for job in batchJobs where (job.sourceURL != nil && job.sourceProbe == nil) || (job.targetURL != nil && job.targetProbe == nil) {
             await probeBatchJob(job)
         }
         syncMenuState()
@@ -487,6 +637,7 @@ final class AppModel {
     func removeBatchJobs(ids: Set<UUID>, undoManager: UndoManager?) {
         let snapshot = batchJobs
         let oldSelection = selectedBatchJobIDs
+        let oldStage = isBatchInQueueStage
         let removedIndices = batchJobs.enumerated().filter { ids.contains($0.element.id) }.map(\.offset)
         batchJobs.removeAll { ids.contains($0.id) }
         if let firstIdx = removedIndices.first, !batchJobs.isEmpty {
@@ -494,25 +645,32 @@ final class AppModel {
             selectedBatchJobIDs = [batchJobs[nextIdx].id]
         } else {
             selectedBatchJobIDs = []
+            if batchJobs.isEmpty {
+                isBatchInQueueStage = false
+                batchSourceFolder = nil
+                batchTargetFolder = nil
+                stagedSourceMedia = []
+                stagedSourceSubtitles = []
+                stagedTargetMedia = []
+            }
         }
 
         undoManager?.registerUndo(withTarget: self) { target in
             target.batchJobs = snapshot
             target.selectedBatchJobIDs = oldSelection
+            target.isBatchInQueueStage = oldStage
         }
         undoManager?.setActionName("Remove Episodes")
     }
 
-    func clearCompletedBatchJobs(undoManager: UndoManager?) {
-        let toRemove = Set(batchJobs.filter { $0.status == .succeeded }.map(\.id))
-        guard !toRemove.isEmpty else { return }
-        removeBatchJobs(ids: toRemove, undoManager: undoManager)
-        undoManager?.setActionName("Clear Completed Episodes")
-    }
-
     func addEmptyBatchRow() {
-        let row = EpisodeJob(episodeBadge: String(format: "#%02d", batchJobs.count + 1), isExactMatch: false)
+        let row = EpisodeJob(
+            episodeBadge: String(format: "#%02d", batchJobs.count + 1),
+            matchKind: .unmatched,
+            isVerified: false
+        )
         batchJobs.append(row)
+        isBatchInQueueStage = true
         selectedBatchJobIDs = [row.id]
     }
 
@@ -543,9 +701,13 @@ final class AppModel {
 
         isRunning = true
         isPaused = false
+        isCancelling = false
+        cancelRequested = false
         runningTask = Task {
             defer {
                 isRunning = false
+                isCancelling = false
+                cancelRequested = false
                 activeJobID = nil
                 syncMenuState()
             }
@@ -571,21 +733,26 @@ final class AppModel {
 
         isRunning = true
         isPaused = false
+        isCancelling = false
+        cancelRequested = false
         runningTask = Task {
             defer {
                 isRunning = false
                 isPaused = false
+                isCancelling = false
+                cancelRequested = false
                 activeJobID = nil
                 syncMenuState()
             }
             for (idx, job) in batchJobs.enumerated() {
-                if Task.isCancelled { break }
-                while isPaused && !Task.isCancelled {
+                if cancelRequested || Task.isCancelled { break }
+                while isPaused && !cancelRequested && !Task.isCancelled {
                     try? await Task.sleep(for: .milliseconds(150))
                 }
-                if Task.isCancelled { break }
+                if cancelRequested || Task.isCancelled { break }
                 guard job.hasRequiredInputs, job.status == .pending || job.status == .cancelled else { continue }
                 await execute(job: job, index: idx + 1, mode: "sync")
+                if cancelRequested { break }
             }
         }
     }
@@ -596,22 +763,20 @@ final class AppModel {
         syncMenuState()
     }
 
+    /// Gracefully cancels the active job by signalling `worker.py` (SIGTERM) while keeping
+    /// stdout streaming alive so the worker's cleanup log event appears in the Log Inspector.
     func cancelActiveJob() {
-        guard isRunning else { return }
-        runningTask?.cancel()
-        workerClient.cancelActiveJob()
+        guard isRunning, !isCancelling else { return }
+        cancelRequested = true
+        isCancelling = true
         if let activeID = activeJobID {
             if singleJob.id == activeID {
-                singleJob.status = .cancelled
-                singleJob.stageDetail = "Cancelled"
+                singleJob.stageDetail = "Cancelling and cleaning up temporary files…"
             } else if let idx = batchJobs.firstIndex(where: { $0.id == activeID }) {
-                batchJobs[idx].status = .cancelled
-                batchJobs[idx].stageDetail = "Cancelled"
+                batchJobs[idx].stageDetail = "Cancelling and cleaning up temporary files…"
             }
         }
-        isRunning = false
-        isPaused = false
-        activeJobID = nil
+        workerClient.cancelActiveJob()
         syncMenuState()
     }
 
@@ -654,15 +819,20 @@ final class AppModel {
         }
 
         isRunning = true
+        isCancelling = false
+        cancelRequested = false
         runningTask = Task {
             defer {
                 isRunning = false
+                isCancelling = false
+                cancelRequested = false
                 activeJobID = nil
                 syncMenuState()
             }
             for (idx, job) in targets.enumerated() {
-                if Task.isCancelled { break }
+                if cancelRequested || Task.isCancelled { break }
                 await execute(job: job, index: idx + 1, mode: "merge")
+                if cancelRequested { break }
             }
         }
     }
@@ -706,9 +876,13 @@ final class AppModel {
                 guard let self, let job else { return }
                 switch event {
                 case let .stage(_, detail, _):
-                    job.stageDetail = detail
+                    if !self.cancelRequested {
+                        job.stageDetail = detail
+                    }
                 case let .progress(fraction, _, _):
-                    job.progress = fraction
+                    if !self.cancelRequested {
+                        job.progress = fraction
+                    }
                 case let .log(source, severity, line, lineIndex, timestamp):
                     let entry = LogEntry(
                         lineIndex: lineIndex,
@@ -728,17 +902,21 @@ final class AppModel {
                     job.metrics = metrics
                 case let .jobResult(result):
                     receivedResult = result
-                case let .error(_, message, _):
-                    receivedError = message
-                    self.appendGlobalLog(source: "worker", severity: .error, line: "[\(job.episodeBadge)] \(message)", jobID: job.id)
+                case let .error(code, message, _):
+                    if code != "cancelled" {
+                        receivedError = message
+                        self.appendGlobalLog(source: "worker", severity: .error, line: "[\(job.episodeBadge)] \(message)", jobID: job.id)
+                    }
                 default:
                     break
                 }
             }
 
-            if Task.isCancelled || exitCode == 130 {
+            if cancelRequested || Task.isCancelled || exitCode == 130 || exitCode == 143 {
                 job.status = .cancelled
-                job.stageDetail = "Cancelled"
+                job.progress = 0
+                job.stageDetail = "Cancelled · temporary files cleaned"
+                job.errorMessage = nil
                 return
             }
 
@@ -755,7 +933,6 @@ final class AppModel {
                 job.sushiLogPath = res.sushiLogPath ?? job.sushiLogPath
                 job.mergeLogPath = res.mergeLogPath ?? job.mergeLogPath
 
-                // Cross-verify logs with Swift WarningAnalyzer to guarantee every warning pattern is caught.
                 let analyzed = warningAnalyzer.analyze(lines: job.logs.map(\.line))
                 for w in analyzed.warnings {
                     if !job.warnings.contains(where: { $0.code == w.code && $0.lineIndex == w.lineIndex }) {
@@ -775,10 +952,16 @@ final class AppModel {
                 job.stageDetail = "Failed"
             }
         } catch {
-            job.status = .failed
-            job.errorMessage = error.localizedDescription
-            job.stageDetail = "Failed"
-            appendGlobalLog(source: "app", severity: .error, line: "[\(job.episodeBadge)] \(error.localizedDescription)", jobID: job.id)
+            if cancelRequested {
+                job.status = .cancelled
+                job.progress = 0
+                job.stageDetail = "Cancelled"
+            } else {
+                job.status = .failed
+                job.errorMessage = error.localizedDescription
+                job.stageDetail = "Failed"
+                appendGlobalLog(source: "app", severity: .error, line: "[\(job.episodeBadge)] \(error.localizedDescription)", jobID: job.id)
+            }
         }
     }
 
@@ -885,13 +1068,6 @@ final class AppModel {
         }
     }
 
-    func openBatchFoldersWorkflow() {
-        guard let src = pickFolder(title: "Select Source Folder") else { return }
-        guard let dst = pickFolder(title: "Select Target Folder") else { return }
-        sidebar = .batchQueue
-        loadBatchFromFolders(sourceFolder: src, targetFolder: dst)
-    }
-
     func pickSingleFile(title: String, allowedExtensions: [String]) -> URL? {
         let panel = NSOpenPanel()
         panel.title = title
@@ -937,6 +1113,9 @@ final class AppModel {
         menu.isPaused = isPaused
         menu.selectedBatchCount = selectedBatchJobIDs.count
         menu.hasLogs = !activeLogEntries().isEmpty
+        menu.canClearSingle = !isRunning && singleJob.hasAnyStateToClear
+        menu.canClearBatch = !isRunning && (isBatchInQueueStage || hasStagedSource || hasStagedTarget)
+        menu.unverifiedBatchCount = unverifiedBatchCount
 
         switch sidebar {
         case .singleEpisode:
@@ -944,9 +1123,9 @@ final class AppModel {
             menu.canRetry = !isRunning && (singleJob.status == .failed || singleJob.status == .warned || singleJob.status == .cancelled)
             menu.canMerge = !isRunning && singleJob.canMergeManually && dependencies.isInstalled(.mkvmerge)
         case .batchQueue:
-            menu.canRun = !isRunning && batchJobs.contains(where: { $0.hasRequiredInputs && ($0.status == .pending || $0.status == .cancelled) }) && dependencies.allRequiredReady
-            menu.canRetry = !isRunning && batchJobs.contains(where: { $0.status == .failed || $0.status == .warned || $0.status == .cancelled })
-            menu.canMerge = !isRunning && batchJobs.contains(where: \.canMergeManually) && dependencies.isInstalled(.mkvmerge)
+            menu.canRun = !isRunning && isBatchInQueueStage && batchJobs.contains(where: { $0.hasRequiredInputs && ($0.status == .pending || $0.status == .cancelled) }) && dependencies.allRequiredReady
+            menu.canRetry = !isRunning && isBatchInQueueStage && batchJobs.contains(where: { $0.status == .failed || $0.status == .warned || $0.status == .cancelled })
+            menu.canMerge = !isRunning && isBatchInQueueStage && batchJobs.contains(where: \.canMergeManually) && dependencies.isInstalled(.mkvmerge)
         case .dependencies:
             menu.canRun = !dependencies.isBusy && !dependencies.allRequiredReady
             menu.canRetry = false

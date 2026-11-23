@@ -171,13 +171,20 @@ public struct SushiAdvancedArgs: Codable, Hashable, Sendable {
     public var maxTsDuration: Double
     public var maxTsDistance: Double
 
+    public static let defaultWindow = 10
+    public static let defaultMaxWindow = 30
+    public static let defaultRewindThresh = 5
+    public static let defaultSmoothRadius = 3
+    public static let defaultMaxTsDuration = 0.417
+    public static let defaultMaxTsDistance = 0.417
+
     public init(
-        window: Int = 10,
-        maxWindow: Int = 30,
-        rewindThresh: Int = 5,
-        smoothRadius: Int = 3,
-        maxTsDuration: Double = 0.417,
-        maxTsDistance: Double = 0.417
+        window: Int = SushiAdvancedArgs.defaultWindow,
+        maxWindow: Int = SushiAdvancedArgs.defaultMaxWindow,
+        rewindThresh: Int = SushiAdvancedArgs.defaultRewindThresh,
+        smoothRadius: Int = SushiAdvancedArgs.defaultSmoothRadius,
+        maxTsDuration: Double = SushiAdvancedArgs.defaultMaxTsDuration,
+        maxTsDistance: Double = SushiAdvancedArgs.defaultMaxTsDistance
     ) {
         self.window = window
         self.maxWindow = maxWindow
@@ -185,6 +192,15 @@ public struct SushiAdvancedArgs: Codable, Hashable, Sendable {
         self.smoothRadius = smoothRadius
         self.maxTsDuration = maxTsDuration
         self.maxTsDistance = maxTsDistance
+    }
+
+    public var hasNonDefaultValues: Bool {
+        window != Self.defaultWindow
+            || maxWindow != Self.defaultMaxWindow
+            || rewindThresh != Self.defaultRewindThresh
+            || smoothRadius != Self.defaultSmoothRadius
+            || abs(maxTsDuration - Self.defaultMaxTsDuration) > 0.0005
+            || abs(maxTsDistance - Self.defaultMaxTsDistance) > 0.0005
     }
 }
 
@@ -206,7 +222,7 @@ public struct SyncSettings: Codable, Hashable, Sendable {
 
     public init(
         useHighQualityResample: Bool = true,
-        enableAdvancedArgs: Bool = false,
+        enableAdvancedArgs: Bool = true,
         advancedArgs: SushiAdvancedArgs = SushiAdvancedArgs(),
         grouping: Bool = true,
         chaptersMode: ChaptersModeOption = .auto,
@@ -234,6 +250,74 @@ public struct SyncSettings: Codable, Hashable, Sendable {
         self.srcFps = srcFps
         self.dstFps = dstFps
         self.verboseLogging = verboseLogging
+    }
+
+    /// Maps all non-default Sushi flags 1:1 to `sushi-sub-next` CLI arguments.
+    public func sushiCLIArguments() -> [String] {
+        var args: [String] = []
+        if useHighQualityResample {
+            args.append(contentsOf: ["--sample-rate", "24000"])
+        }
+        if advancedArgs.window != SushiAdvancedArgs.defaultWindow {
+            args.append(contentsOf: ["--window", String(advancedArgs.window)])
+        }
+        if advancedArgs.maxWindow != SushiAdvancedArgs.defaultMaxWindow {
+            args.append(contentsOf: ["--max-window", String(advancedArgs.maxWindow)])
+        }
+        if advancedArgs.rewindThresh != SushiAdvancedArgs.defaultRewindThresh {
+            args.append(contentsOf: ["--rewind-thresh", String(advancedArgs.rewindThresh)])
+        }
+        if advancedArgs.smoothRadius != SushiAdvancedArgs.defaultSmoothRadius {
+            args.append(contentsOf: ["--smooth-radius", String(advancedArgs.smoothRadius)])
+        }
+        if abs(advancedArgs.maxTsDuration - SushiAdvancedArgs.defaultMaxTsDuration) > 0.0005 {
+            args.append(contentsOf: ["--max-ts-duration", String(advancedArgs.maxTsDuration)])
+        }
+        if abs(advancedArgs.maxTsDistance - SushiAdvancedArgs.defaultMaxTsDistance) > 0.0005 {
+            args.append(contentsOf: ["--max-ts-distance", String(advancedArgs.maxTsDistance)])
+        }
+        if !grouping {
+            args.append("--no-grouping")
+        }
+        switch chaptersMode {
+        case .auto:
+            break
+        case .none:
+            args.append(contentsOf: ["--chapters", "none"])
+        case .file:
+            let path = chaptersFile.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !path.isEmpty {
+                args.append(contentsOf: ["--chapters", path])
+            }
+        }
+        switch keyframesSource {
+        case .none:
+            break
+        case .auto, .make:
+            args.append(contentsOf: ["--src-keyframes", keyframesSource.rawValue, "--dst-keyframes", keyframesSource.rawValue])
+        case .files:
+            let s = srcKeyframesFile.trimmingCharacters(in: .whitespacesAndNewlines)
+            let d = dstKeyframesFile.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !s.isEmpty && !d.isEmpty {
+                args.append(contentsOf: ["--src-keyframes", s, "--dst-keyframes", d])
+            }
+        }
+        if keyframesSource != .none {
+            if abs(maxKfDistance - 2.0) > 0.0005 {
+                args.append(contentsOf: ["--max-kf-distance", String(maxKfDistance)])
+            }
+            if kfMode != .all {
+                args.append(contentsOf: ["--kf-mode", kfMode.rawValue])
+            }
+            let sf = srcFps.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !sf.isEmpty { args.append(contentsOf: ["--src-fps", sf]) }
+            let df = dstFps.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !df.isEmpty { args.append(contentsOf: ["--dst-fps", df]) }
+        }
+        if verboseLogging {
+            args.append("-v")
+        }
+        return args
     }
 }
 

@@ -30,8 +30,8 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .fitsContent(max: 680)
-        .frame(width: 520)
+        .fitsContent(max: 760)
+        .frame(width: 540)
     }
 }
 
@@ -42,9 +42,10 @@ private struct GeneralSettingsTab: View {
     var body: some View {
         @Bindable var model = model
 
-        Section {
+        Section("Output Placement") {
             Toggle("Save outputs to a custom folder", isOn: $model.config.general.useCustomOutputDirectory)
                 .controlSize(.mini)
+                .hoverDescription(SushiHelpText.customOutputDir)
 
             if model.config.general.useCustomOutputDirectory {
                 LabeledContent("Output folder") {
@@ -62,24 +63,24 @@ private struct GeneralSettingsTab: View {
                         .controlSize(.small)
                     }
                 }
+                .hoverDescription(SushiHelpText.customOutputDir)
             }
-        } header: {
-            Text("Output Placement")
-        } footer: {
-            Text("By default, synced subtitles are written beside the Target file (`<target>.sushi.<ext>`) and merged MKVs go into a `Merged Files` subfolder, matching sushi-batch.")
         }
 
         Section("Log Files") {
             Toggle("Save Sushi sync logs to Application Support", isOn: $model.config.general.saveSushiLogs)
                 .controlSize(.mini)
+                .hoverDescription("Write a timestamped Sushi log file for every sync run inside Application Support/Sushi.GS/logs.")
             Toggle("Save MKVMerge and audio-encode logs", isOn: $model.config.general.saveMergeLogs)
                 .controlSize(.mini)
+                .hoverDescription("Write MKVMerge and audio re-encoding logs inside Application Support/Sushi.GS/logs.")
             LabeledContent("Runtime & logs folder") {
                 Button("Open in Finder") {
                     NSWorkspace.shared.open(model.paths.rootDir)
                 }
                 .controlSize(.small)
             }
+            .hoverDescription("Reveal ~/Library/Application Support/Sushi.GS in Finder.")
         }
 
         Section("Reusable Presets") {
@@ -123,57 +124,79 @@ private struct SyncSettingsTab: View {
     var body: some View {
         @Bindable var model = model
 
-        Section {
-            Toggle("Use 24 kHz high-quality audio resampling", isOn: $model.config.sync.useHighQualityResample)
+        Section("Audio Matching & Search Window") {
+            Toggle("24 kHz HQ audio resampling", isOn: $model.config.sync.useHighQualityResample)
                 .controlSize(.mini)
+                .hoverDescription(SushiHelpText.hq24kHz)
+
+            Stepper(
+                "Window: \(model.config.sync.advancedArgs.window) s",
+                value: $model.config.sync.advancedArgs.window,
+                in: 2...120
+            )
+            .hoverDescription(SushiHelpText.window)
+
+            Stepper(
+                "Max Window: \(model.config.sync.advancedArgs.maxWindow) s",
+                value: $model.config.sync.advancedArgs.maxWindow,
+                in: 5...300
+            )
+            .hoverDescription(SushiHelpText.maxWindow)
+
             Toggle("Group and smooth shifts across segments", isOn: $model.config.sync.grouping)
                 .controlSize(.mini)
-            Toggle("Enable verbose Sushi diagnostic logging", isOn: $model.config.sync.verboseLogging)
-                .controlSize(.mini)
-        } header: {
-            Text("Audio Pattern Matching")
-        } footer: {
-            Text("24 kHz resampling improves sync precision on subtle cadence differences at a modest speed cost.")
+                .hoverDescription(SushiHelpText.grouping)
         }
 
-        Section("Advanced Sushi Parameters") {
-            Toggle("Override default search window and smoothing parameters", isOn: $model.config.sync.enableAdvancedArgs)
-                .controlSize(.mini)
+        Section("Grouping, Smoothing & Typesetting") {
+            Stepper(
+                "Rewind threshold: \(model.config.sync.advancedArgs.rewindThresh) events",
+                value: $model.config.sync.advancedArgs.rewindThresh,
+                in: 0...50
+            )
+            .hoverDescription(SushiHelpText.rewindThresh)
 
-            if model.config.sync.enableAdvancedArgs {
-                Stepper("Search window: \(model.config.sync.advancedArgs.window) s",
-                        value: $model.config.sync.advancedArgs.window, in: 2...120)
-                Stepper("Max fallback window: \(model.config.sync.advancedArgs.maxWindow) s",
-                        value: $model.config.sync.advancedArgs.maxWindow, in: 5...300)
-                Stepper("Rewind threshold: \(model.config.sync.advancedArgs.rewindThresh) events",
-                        value: $model.config.sync.advancedArgs.rewindThresh, in: 0...50)
-                Stepper("Smoothing median radius: \(model.config.sync.advancedArgs.smoothRadius) events",
-                        value: $model.config.sync.advancedArgs.smoothRadius, in: 0...25)
-                LabeledContent("Max typesetting duration (s)") {
-                    TextField("0.417", value: $model.config.sync.advancedArgs.maxTsDuration, format: .number)
-                        .frame(width: 80)
-                        .multilineTextAlignment(.trailing)
-                }
-                LabeledContent("Max typesetting distance (s)") {
-                    TextField("0.417", value: $model.config.sync.advancedArgs.maxTsDistance, format: .number)
-                        .frame(width: 80)
-                        .multilineTextAlignment(.trailing)
-                }
+            Stepper(
+                "Smoothing radius: \(model.config.sync.advancedArgs.smoothRadius) events",
+                value: $model.config.sync.advancedArgs.smoothRadius,
+                in: 0...25
+            )
+            .hoverDescription(SushiHelpText.smoothRadius)
+
+            LabeledContent("Max typesetting duration (s)") {
+                TextField("", value: $model.config.sync.advancedArgs.maxTsDuration, format: .number, prompt: Text("0.417"))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 80)
+                    .multilineTextAlignment(.trailing)
             }
+            .hoverDescription(SushiHelpText.maxTsDuration)
+
+            LabeledContent("Max typesetting distance (s)") {
+                TextField("", value: $model.config.sync.advancedArgs.maxTsDistance, format: .number, prompt: Text("0.417"))
+                    .labelsHidden()
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 80)
+                    .multilineTextAlignment(.trailing)
+            }
+            .hoverDescription(SushiHelpText.maxTsDistance)
         }
 
-        Section("Chapters & Keyframes") {
+        Section("Chapters & Keyframe Snapping") {
             Picker("Chapters", selection: $model.config.sync.chaptersMode) {
                 ForEach(ChaptersModeOption.allCases) { opt in
                     Text(opt.displayName).tag(opt)
                 }
             }
+            .hoverDescription(SushiHelpText.chapters)
 
             if model.config.sync.chaptersMode == .file {
                 LabeledContent("Chapters file") {
                     HStack(spacing: Space.sm) {
                         Text(model.config.sync.chaptersFile.isEmpty ? "None" : URL(fileURLWithPath: model.config.sync.chaptersFile).lastPathComponent)
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
                         Button("Choose…") {
                             if let url = model.pickSingleFile(title: "Choose Chapters File", allowedExtensions: ["xml", "txt"]) {
                                 model.config.sync.chaptersFile = url.path
@@ -182,12 +205,48 @@ private struct SyncSettingsTab: View {
                         .controlSize(.small)
                     }
                 }
+                .hoverDescription(SushiHelpText.chapters)
             }
 
-            Picker("Keyframes snapping", selection: $model.config.sync.keyframesSource) {
+            Picker("Keyframe snapping", selection: $model.config.sync.keyframesSource) {
                 ForEach(KeyframesSourceOption.allCases) { opt in
                     Text(opt.displayName).tag(opt)
                 }
+            }
+            .hoverDescription(SushiHelpText.keyframeSnapping)
+
+            if model.config.sync.keyframesSource == .files {
+                LabeledContent("Source keyframes file") {
+                    HStack(spacing: Space.sm) {
+                        Text(model.config.sync.srcKeyframesFile.isEmpty ? "None" : URL(fileURLWithPath: model.config.sync.srcKeyframesFile).lastPathComponent)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Button("Choose…") {
+                            if let url = model.pickSingleFile(title: "Choose Source Keyframes File", allowedExtensions: ["txt", "log", "keyframes"]) {
+                                model.config.sync.srcKeyframesFile = url.path
+                            }
+                        }
+                        .controlSize(.small)
+                    }
+                }
+                .hoverDescription(SushiHelpText.keyframeSnapping)
+
+                LabeledContent("Target keyframes file") {
+                    HStack(spacing: Space.sm) {
+                        Text(model.config.sync.dstKeyframesFile.isEmpty ? "None" : URL(fileURLWithPath: model.config.sync.dstKeyframesFile).lastPathComponent)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Button("Choose…") {
+                            if let url = model.pickSingleFile(title: "Choose Target Keyframes File", allowedExtensions: ["txt", "log", "keyframes"]) {
+                                model.config.sync.dstKeyframesFile = url.path
+                            }
+                        }
+                        .controlSize(.small)
+                    }
+                }
+                .hoverDescription(SushiHelpText.keyframeSnapping)
             }
 
             if model.config.sync.keyframesSource != .none {
@@ -196,12 +255,48 @@ private struct SyncSettingsTab: View {
                         Text(mode.displayName).tag(mode)
                     }
                 }
+                .hoverDescription(SushiHelpText.keyframeMode)
+
                 LabeledContent("Max keyframe distance (frames)") {
-                    TextField("2.0", value: $model.config.sync.maxKfDistance, format: .number)
+                    TextField("", value: $model.config.sync.maxKfDistance, format: .number, prompt: Text("2.0"))
+                        .labelsHidden()
+                        .textFieldStyle(.roundedBorder)
                         .frame(width: 80)
                         .multilineTextAlignment(.trailing)
                 }
+                .hoverDescription(SushiHelpText.maxKfDistance)
+
+                LabeledContent("FPS override (Source / Target)") {
+                    HStack(spacing: Space.sm) {
+                        TextField("", text: $model.config.sync.srcFps, prompt: Text("Auto"))
+                            .labelsHidden()
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 72)
+                        Text("/")
+                            .foregroundStyle(.secondary)
+                        TextField("", text: $model.config.sync.dstFps, prompt: Text("Auto"))
+                            .labelsHidden()
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 72)
+                    }
+                }
+                .hoverDescription(SushiHelpText.fpsOverride)
             }
+        }
+
+        Section("Diagnostics") {
+            Toggle("Verbose Sushi diagnostic logging", isOn: $model.config.sync.verboseLogging)
+                .controlSize(.mini)
+                .hoverDescription(SushiHelpText.verboseLogging)
+
+            LabeledContent("Sync defaults") {
+                Button("Reset Sync Defaults") {
+                    model.config.sync = SyncSettings()
+                }
+                .controlSize(.small)
+                .disabled(model.config.sync == SyncSettings())
+            }
+            .hoverDescription("Restore all Sync parameters to their default values.")
         }
     }
 }
@@ -218,28 +313,36 @@ private struct MergeSettingsTab: View {
             Toggle("Merge automatically after sync completes", isOn: $model.config.merge.autoMergeOnSync)
                 .controlSize(.mini)
                 .disabled(!hasMKVMerge)
+                .hoverDescription(hasMKVMerge ? SushiHelpText.autoMerge : SushiHelpText.autoMergeMissing)
+
             Toggle("Resample synced subtitle resolution before merge", isOn: $model.config.merge.resampleSubsBeforeMerge)
                 .controlSize(.mini)
                 .disabled(!hasAegisub)
+                .hoverDescription(hasAegisub ? SushiHelpText.resampleSubs : SushiHelpText.resampleSubsMissing)
+
             Toggle("Delete generated subtitle and audio files after merge", isOn: $model.config.merge.deleteGeneratedFilesAfterMerge)
                 .controlSize(.mini)
+                .hoverDescription(SushiHelpText.deleteGenerated)
         } header: {
             Text("Merge Workflow")
         } footer: {
             if !hasAegisub {
-                Text("Subtitle resampling is disabled until aegisub-cli is installed or configured in Dependencies.")
+                Text("Subtitle resampling requires aegisub-cli in Dependencies.")
             } else if !hasMKVMerge {
-                Text("Install MKVMerge in Dependencies to enable automatic MKV merging.")
+                Text("Automatic MKV merging requires MKVMerge in Dependencies.")
             }
         }
 
         Section("Synced Subtitle Track Flags") {
             Toggle("Set default track flag", isOn: $model.config.merge.syncedSubtitle.setDefaultFlag)
                 .controlSize(.mini)
+                .hoverDescription("Mark the synced subtitle track as the default subtitle track in the merged MKV.")
             Toggle("Set forced display flag", isOn: $model.config.merge.syncedSubtitle.setForcedFlag)
                 .controlSize(.mini)
+                .hoverDescription("Mark the synced subtitle track as forced (typically used for signs & songs tracks).")
             Toggle("Override merged subtitle track name", isOn: $model.config.merge.syncedSubtitle.overrideTrackTitle)
                 .controlSize(.mini)
+                .hoverDescription("Replace the Source subtitle track's original title with a custom label in the merged MKV.")
             if model.config.merge.syncedSubtitle.overrideTrackTitle {
                 TextField("Custom track name", text: $model.config.merge.syncedSubtitle.customTrackTitle)
             }
@@ -248,8 +351,10 @@ private struct MergeSettingsTab: View {
         Section("Tracks & Metadata to Copy") {
             Toggle("Copy Source attachments (fonts & cover art)", isOn: $model.config.merge.source.copyAttachments)
                 .controlSize(.mini)
+                .hoverDescription(SushiHelpText.copySourceAttachments)
             Toggle("Copy Source chapters", isOn: $model.config.merge.source.copyChapters)
                 .controlSize(.mini)
+                .hoverDescription(SushiHelpText.copySourceChapters)
             Toggle("Copy Target attachments & chapters", isOn: Binding(
                 get: { model.config.merge.target.copyAttachments && model.config.merge.target.copyChapters },
                 set: {
@@ -258,10 +363,13 @@ private struct MergeSettingsTab: View {
                 }
             ))
             .controlSize(.mini)
+            .hoverDescription(SushiHelpText.copyTargetAttachmentsChapters)
             Toggle("Copy Target existing subtitles", isOn: $model.config.merge.target.copySubtitles)
                 .controlSize(.mini)
+                .hoverDescription(SushiHelpText.copyTargetSubtitles)
             Toggle("Only keep Target audio track used for sync", isOn: $model.config.merge.target.onlyIncludeSyncAudioTrack)
                 .controlSize(.mini)
+                .hoverDescription(SushiHelpText.onlyKeepSyncAudio)
             Toggle("Copy Target global & track tags", isOn: Binding(
                 get: { model.config.merge.target.copyGlobalTags && model.config.merge.target.copyTrackTags },
                 set: {
@@ -270,6 +378,7 @@ private struct MergeSettingsTab: View {
                 }
             ))
             .controlSize(.mini)
+            .hoverDescription(SushiHelpText.copyTargetTags)
         }
     }
 }
@@ -280,15 +389,18 @@ private struct AudioEncodeSettingsTab: View {
     var body: some View {
         @Bindable var model = model
 
-        Section {
+        Section("Lossless Audio Re-Encoding") {
             Toggle("Re-encode lossless audio (FLAC / WAV) before merging", isOn: $model.config.audioEncode.enabled)
                 .controlSize(.mini)
+                .hoverDescription(SushiHelpText.audioEncode)
+
             Picker("Target codec", selection: $model.config.audioEncode.codec) {
                 ForEach(AudioEncodeCodecOption.allCases) { codec in
                     Text(codec.displayName).tag(codec)
                 }
             }
             .disabled(!model.config.audioEncode.enabled)
+            .hoverDescription("Lossy codec used when transcoding lossless Target audio tracks.")
 
             Picker("Tracks to encode", selection: $model.config.audioEncode.tracksScope) {
                 ForEach(AudioTracksToEncodeOption.allCases) { scope in
@@ -296,6 +408,7 @@ private struct AudioEncodeSettingsTab: View {
                 }
             }
             .disabled(!model.config.audioEncode.enabled)
+            .hoverDescription(SushiHelpText.audioTracksScope)
 
             if model.config.audioEncode.codec == .opus {
                 Picker("Opus encoder", selection: $model.config.audioEncode.opusEncoder) {
@@ -304,11 +417,8 @@ private struct AudioEncodeSettingsTab: View {
                     }
                 }
                 .disabled(!model.config.audioEncode.enabled)
+                .hoverDescription(SushiHelpText.opusEncoder)
             }
-        } header: {
-            Text("Lossless Audio Re-Encoding")
-        } footer: {
-            Text("Re-encodes lossless FLAC or WAV audio streams before MKVMerge muxing. Lossy tracks are copied untouched.")
         }
 
         Section("Target Bitrates (\(model.config.audioEncode.codec.displayName))") {
@@ -319,6 +429,7 @@ private struct AudioEncodeSettingsTab: View {
                 bitrateField("7.1", text: $model.config.audioEncode.activeBitrates.surround71)
             }
             .disabled(!model.config.audioEncode.enabled)
+            .hoverDescription("Target bitrate per channel layout when re-encoding lossless audio.")
         }
     }
 
@@ -359,12 +470,10 @@ private struct DependenciesSettingsTab: View {
             }
         }
 
-        Section("Advanced Upstream Package Override") {
+        Section("Upstream Package Override") {
             TextField("GitHub branch or tag (blank = PyPI)", text: $model.config.general.sushiBatchGitRef)
+                .hoverDescription("Leave blank to install the latest sushi-batch release from PyPI, or enter a branch/tag to install from GitHub.")
             HStack {
-                Text("Installs from PyPI by default, or `C1fer/sushi-batch@<ref>` when specified.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
                 Spacer()
                 Button("Install / Update sushi-batch") {
                     Task { await deps.installOrUpdate(.sushiBatch, config: model.config) }

@@ -23,7 +23,16 @@ nonisolated final class ActiveProcessHandle: Sendable {
     func terminate() {
         let proc = lock.withLock { $0 }
         guard let proc, proc.isRunning else { return }
+        let pid = proc.processIdentifier
         proc.terminate()
+        // Allow worker.py up to 4 seconds to terminate child process groups, delete temp/partial
+        // files, and emit its cleanup NDJSON log event before escalating to SIGKILL.
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 4.0) { @Sendable in
+            let current = self.lock.withLock { $0 }
+            if let current, current.processIdentifier == pid, current.isRunning {
+                kill(pid, SIGKILL)
+            }
+        }
     }
 }
 

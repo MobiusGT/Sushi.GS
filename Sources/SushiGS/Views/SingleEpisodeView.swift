@@ -54,7 +54,7 @@ struct SingleEpisodeView: View {
 
                     FileDropZoneCard(
                         title: "Target Media",
-                        subtitle: "Drop the Blu-Ray or target release to sync against",
+                        subtitle: "Drop the target video to sync to",
                         symbol: "sparkles.tv",
                         fileURL: job.targetURL,
                         probe: job.targetProbe,
@@ -99,7 +99,7 @@ struct SingleEpisodeView: View {
     private func workflowActionCard(job: EpisodeJob) -> some View {
         @Bindable var model = model
         return VStack(alignment: .leading, spacing: Space.md) {
-            HStack(spacing: Space.md) {
+            HStack(spacing: Space.sm) {
                 Menu {
                     ForEach(model.presets) { preset in
                         Button(preset.name) { model.applyPreset(preset) }
@@ -107,35 +107,50 @@ struct SingleEpisodeView: View {
                 } label: {
                     Label(activePresetName, systemImage: "slider.horizontal.below.rectangle")
                         .foregroundStyle(.primary)
+                        .lineLimit(1)
                 }
                 .menuStyle(.borderlessButton)
                 .fixedSize()
-                .help("Apply a saved sync and merge preset")
+                .hoverDescription("Apply a saved sync and merge preset")
 
                 Toggle("24 kHz HQ", isOn: $model.config.sync.useHighQualityResample)
                     .toggleStyle(.checkbox)
-                    .help("Resample audio to 24 kHz for improved timing accuracy")
+                    .fixedSize()
+                    .hoverDescription(SushiHelpText.hq24kHz)
 
                 Toggle("Auto-Merge", isOn: $model.config.merge.autoMergeOnSync)
                     .toggleStyle(.checkbox)
+                    .fixedSize()
                     .disabled(!model.dependencies.isInstalled(.mkvmerge))
-                    .help(model.dependencies.isInstalled(.mkvmerge)
-                          ? "Automatically merge synced subtitle into Target MKV after sync"
-                          : "Install MKVMerge in Dependencies to enable automatic MKV merging")
+                    .hoverDescription(model.dependencies.isInstalled(.mkvmerge)
+                                      ? SushiHelpText.autoMerge
+                                      : SushiHelpText.autoMergeMissing)
 
                 Spacer(minLength: Space.sm)
 
                 if model.isRunning {
-                    Button("Cancel", role: .destructive) {
+                    Button(model.isCancelling ? "Cancelling…" : "Cancel", role: .destructive) {
                         model.cancelActiveJob()
                     }
+                    .disabled(model.isCancelling)
                     .keyboardShortcut(.cancelAction)
+                    .hoverDescription("Stop the running sync and remove temporary and partial output files (Command-Period)")
                 } else {
+                    Button("Clear") {
+                        model.clearSingleEpisode()
+                    }
+                    .controlSize(.small)
+                    .disabled(!job.hasAnyStateToClear)
+                    .fixedSize()
+                    .hoverDescription("Clear files, status, metrics, warnings, and logs to start fresh (Shift-Command-K)")
+
                     if job.canMergeManually && model.dependencies.isInstalled(.mkvmerge) {
                         Button("Merge MKV") {
                             model.mergeCompletedJobs()
                         }
-                        .help("Merge the synced subtitle into a new MKV (Shift-Command-M)")
+                        .controlSize(.small)
+                        .fixedSize()
+                        .hoverDescription("Merge the synced subtitle into a new MKV (Shift-Command-M)")
                     }
                     Button {
                         model.runSingleEpisode(mode: "sync")
@@ -145,9 +160,13 @@ struct SingleEpisodeView: View {
                     .buttonStyle(.borderedProminent)
                     .fixedSize()
                     .disabled(!job.hasRequiredInputs || !model.dependencies.allRequiredReady)
-                    .help("Run Sushi subtitle synchronization (Command-R)")
+                    .hoverDescription("Run Sushi subtitle synchronization (Command-R)")
                 }
             }
+
+            Divider()
+
+            InlineSyncOptionsStrip(includeHQToggle: false, framedAsCard: false)
 
             if job.status == .running {
                 VStack(alignment: .leading, spacing: Space.xs) {

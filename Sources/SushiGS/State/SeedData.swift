@@ -6,7 +6,6 @@ enum SeedData {
     static func populate(model: AppModel) {
         model.dependencies.applySeededPreviewState()
 
-        // Single Episode seeded with a realistic warning showcase + inspected multi-track media.
         let srcURL = URL(fileURLWithPath: "/Volumes/Media/WEB-DL/[SubsPlease] Frieren - 04 (1080p) [A9F2C10B].mkv")
         let dstURL = URL(fileURLWithPath: "/Volumes/Media/BluRay/Frieren.S01E04.1080p.BluRay.x265.10bit.FLAC.mkv")
 
@@ -43,7 +42,8 @@ enum SeedData {
 
         let single = EpisodeJob(
             episodeBadge: "EP 04",
-            isExactMatch: true,
+            matchKind: .episodeRegex,
+            isVerified: true,
             sourceURL: srcURL,
             targetURL: dstURL,
             selectedSourceAudioID: 1,
@@ -95,22 +95,27 @@ enum SeedData {
         ]
         model.singleJob = single
 
-        // Batch Queue seeded with 4 episodes spanning Synced, Warning, Ready, and Failed states.
-        let batchStatuses: [(Int, JobStatus, Double?, [SyncWarning], String?)] = [
-            (1, .succeeded, 0.842, [], nil),
-            (2, .warned, 1.428, single.warnings, nil),
-            (3, .pending, nil, [], nil),
-            (4, .failed, nil, [], "Audio stream index 3 does not exist in target file."),
+        // Seed Stage 2 batch queue spanning Exact-Name Auto-Verified + Regex Unverified rows.
+        let batchFixtures: [(Int, JobStatus, PairMatchKind, Bool, Double?, [SyncWarning], String?)] = [
+            (1, .succeeded, .exactFilename, true, 0.842, [], nil),
+            (2, .warned, .episodeRegex, false, 1.428, single.warnings, nil),
+            (3, .pending, .episodeRegex, false, nil, [], nil),
+            (4, .failed, .episodeRegex, true, nil, [], "Audio stream index 3 does not exist in target file."),
         ]
 
         var jobs: [EpisodeJob] = []
-        for (ep, status, shift, warns, err) in batchStatuses {
+        for (ep, status, matchKind, verified, shift, warns, err) in batchFixtures {
             let epStr = String(format: "%02d", ep)
-            let sURL = URL(fileURLWithPath: "/Volumes/Media/WEB-DL/[SubsPlease] Frieren - \(epStr) (1080p).mkv")
-            let tURL = URL(fileURLWithPath: "/Volumes/Media/BluRay/Frieren.S01E\(epStr).1080p.BluRay.x265.mkv")
+            let sURL = matchKind == .exactFilename
+                ? URL(fileURLWithPath: "/Volumes/Media/WEB-DL/Frieren - \(epStr).mkv")
+                : URL(fileURLWithPath: "/Volumes/Media/WEB-DL/[SubsPlease] Frieren - \(epStr) (1080p).mkv")
+            let tURL = matchKind == .exactFilename
+                ? URL(fileURLWithPath: "/Volumes/Media/BluRay/Frieren - \(epStr).mp4")
+                : URL(fileURLWithPath: "/Volumes/Media/BluRay/Frieren.S01E\(epStr).1080p.BluRay.x265.mkv")
             let job = EpisodeJob(
                 episodeBadge: "S01E\(epStr)",
-                isExactMatch: true,
+                matchKind: matchKind,
+                isVerified: verified,
                 sourceURL: sURL,
                 targetURL: tURL,
                 selectedSourceAudioID: 1,
@@ -127,7 +132,7 @@ enum SeedData {
                 job.metrics = SyncMetrics(avgShiftSeconds: shift, medianDiff: 0.018, maxDiff: warns.isEmpty ? 0.041 : 0.382, eventCount: 310, groupCount: 4, warningCount: warns.count)
                 job.syncedFiles = ["\(tURL.path).sushi.ass"]
                 if status == .succeeded {
-                    job.mergedFilepath = "/Volumes/Media/BluRay/Merged Files/Frieren.S01E\(epStr).1080p.BluRay.x265.mkv"
+                    job.mergedFilepath = "/Volumes/Media/BluRay/Merged Files/Frieren - \(epStr).mkv"
                 }
             }
             job.logs = single.logs
@@ -135,8 +140,26 @@ enum SeedData {
         }
         model.batchSourceFolder = URL(fileURLWithPath: "/Volumes/Media/WEB-DL")
         model.batchTargetFolder = URL(fileURLWithPath: "/Volumes/Media/BluRay")
+        model.stagedSourceMedia = jobs.compactMap(\.sourceURL)
+        model.stagedTargetMedia = jobs.compactMap(\.targetURL)
         model.batchJobs = jobs
+        model.isBatchInQueueStage = true
         model.selectedBatchJobIDs = [jobs[1].id]
         model.globalLogs = single.logs
+    }
+
+    /// Configures a deterministic Stage 1 intake state where ONLY the Source folder is set,
+    /// verifying that Batch Mode waits cleanly for Target before transitioning.
+    static func configureOneFolderBatchIntake(model: AppModel) {
+        model.batchJobs = []
+        model.selectedBatchJobIDs = []
+        model.isBatchInQueueStage = false
+        model.batchSourceFolder = URL(fileURLWithPath: "/Volumes/Media/WEB-DL/Frieren Season 1")
+        model.stagedSourceMedia = (1...12).map {
+            URL(fileURLWithPath: String(format: "/Volumes/Media/WEB-DL/Frieren Season 1/[SubsPlease] Frieren - %02d (1080p).mkv", $0))
+        }
+        model.stagedSourceSubtitles = []
+        model.batchTargetFolder = nil
+        model.stagedTargetMedia = []
     }
 }

@@ -2,7 +2,7 @@ import Foundation
 import Testing
 @testable import SushiGSKit
 
-@Suite("Episode Pairing & Batch Track Rules")
+@Suite("Episode Pairing, Auto-Verification & Batch Track Rules")
 struct EpisodePairingTests {
     @Test(
         "Extracts episode keys from common anime and TV release naming patterns",
@@ -24,17 +24,38 @@ struct EpisodePairingTests {
         #expect(key.specialTag == expectedTag)
     }
 
-    @Test("Pairs WEB-DL sources with Blu-Ray targets and external subtitles accurately")
-    func pairsSourcesTargetsAndExternalSubtitles() {
+    @Test("Auto-verifies exact filenames and exact stems across differing container extensions")
+    func exactNameAndStemAutoVerification() {
         let sources = [
+            URL(fileURLWithPath: "/src/Show - 01.mkv"),
+            URL(fileURLWithPath: "/src/Show - 02.mkv"),
+            URL(fileURLWithPath: "/src/Special Feature Movie.mkv"),
+        ]
+        let targets = [
+            URL(fileURLWithPath: "/dst/Show - 01.mp4"),
+            URL(fileURLWithPath: "/dst/Show - 02.mkv"),
+            URL(fileURLWithPath: "/dst/special feature movie.mp4"),
+        ]
+
+        let paired = EpisodePairing.pairFiles(sources: sources, targets: targets)
+        #expect(paired.count == 3)
+        let allExactName = paired.allSatisfy { $0.matchKind == .exactFilename }
+        let allAutoVerified = paired.allSatisfy(\.isVerified)
+        #expect(allExactName)
+        #expect(allAutoVerified)
+    }
+
+    @Test("Marks regex-matched pairs with differing filenames as unverified while keeping exact stems verified")
+    func regexMatchedPairsStartUnverified() {
+        let sources = [
+            URL(fileURLWithPath: "/src/Dungeon Meshi - 01.mkv"),
             URL(fileURLWithPath: "/src/[SubsPlease] Dungeon Meshi - 02 (1080p) [11223344].mkv"),
-            URL(fileURLWithPath: "/src/[SubsPlease] Dungeon Meshi - 01 (1080p) [AABBCCDD].mkv"),
             URL(fileURLWithPath: "/src/[SubsPlease] Dungeon Meshi - 03 (1080p) [55667788].mkv"),
         ]
         let targets = [
-            URL(fileURLWithPath: "/dst/Dungeon.Meshi.S01E03.1080p.BluRay.x265.mkv"),
-            URL(fileURLWithPath: "/dst/Dungeon.Meshi.S01E01.1080p.BluRay.x265.mkv"),
+            URL(fileURLWithPath: "/dst/Dungeon Meshi - 01.mp4"),
             URL(fileURLWithPath: "/dst/Dungeon.Meshi.S01E02.1080p.BluRay.x265.mkv"),
+            URL(fileURLWithPath: "/dst/Dungeon.Meshi.S01E03.1080p.BluRay.x265.mkv"),
         ]
         let subs = [
             URL(fileURLWithPath: "/src/Dungeon Meshi - 02.ass"),
@@ -43,14 +64,27 @@ struct EpisodePairingTests {
 
         let paired = EpisodePairing.pairFiles(sources: sources, targets: targets, externalSubtitles: subs)
         #expect(paired.count == 3)
-        let allExact = paired.allSatisfy(\.isExactMatch)
-        #expect(allExact)
-        #expect(paired[0].sourceFile?.lastPathComponent.contains("- 01") == true)
-        #expect(paired[0].targetFile?.lastPathComponent.contains("S01E01") == true)
+
+        // Episode 1 shares exact stem -> auto-verified
+        #expect(paired[0].matchKind == .exactFilename)
+        #expect(paired[0].isVerified == true)
         #expect(paired[0].externalSubtitleFile?.lastPathComponent.contains("- 01") == true)
+
+        // Episodes 2 & 3 matched via episode regex with differing filenames -> start unverified
+        #expect(paired[1].matchKind == .episodeRegex)
+        #expect(paired[1].isVerified == false)
         #expect(paired[1].targetFile?.lastPathComponent.contains("S01E02") == true)
+        #expect(paired[1].externalSubtitleFile?.lastPathComponent.contains("- 02") == true)
+
+        #expect(paired[2].matchKind == .episodeRegex)
+        #expect(paired[2].isVerified == false)
         #expect(paired[2].targetFile?.lastPathComponent.contains("S01E03") == true)
         #expect(paired[2].externalSubtitleFile == nil)
+
+        // Verify manual state transition on a draft
+        var mutable = paired[1]
+        mutable.isVerified = true
+        #expect(mutable.isVerified == true)
     }
 
     @Test("BatchTrackRule resolves audio and subtitle tracks by language, title, position, and stream ID")
