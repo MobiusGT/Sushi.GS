@@ -271,6 +271,22 @@ final class AppModel {
         batchTargetFolder != nil || !stagedTargetMedia.isEmpty
     }
 
+    /// Folder opened by default when choosing or reselecting a Source file in Batch Queue.
+    var effectiveBatchSourceDirectory: URL? {
+        if let folder = batchSourceFolder { return folder }
+        if let staged = stagedSourceMedia.first { return staged.deletingLastPathComponent() }
+        if let jobSrc = batchJobs.compactMap(\.sourceURL).first { return jobSrc.deletingLastPathComponent() }
+        return nil
+    }
+
+    /// Folder opened by default when choosing or reselecting a Target file in Batch Queue.
+    var effectiveBatchTargetDirectory: URL? {
+        if let folder = batchTargetFolder { return folder }
+        if let staged = stagedTargetMedia.first { return staged.deletingLastPathComponent() }
+        if let jobDst = batchJobs.compactMap(\.targetURL).first { return jobDst.deletingLastPathComponent() }
+        return nil
+    }
+
     var unverifiedBatchCount: Int {
         batchJobs.filter { !$0.isVerified && $0.sourceURL != nil && $0.targetURL != nil }.count
     }
@@ -468,21 +484,23 @@ final class AppModel {
         }
 
         if asSource {
+            let inferredFolder = pickedFolder ?? media.first?.deletingLastPathComponent()
             if replaceExisting || !isBatchInQueueStage {
-                batchSourceFolder = pickedFolder ?? (media.count == 1 ? nil : batchSourceFolder)
+                batchSourceFolder = inferredFolder ?? batchSourceFolder
                 stagedSourceMedia = uniqueURLs(replaceExisting ? media : (isBatchInQueueStage ? stagedSourceMedia + media : media))
                 stagedSourceSubtitles = uniqueURLs(replaceExisting ? subs : (isBatchInQueueStage ? stagedSourceSubtitles + subs : subs))
             } else {
-                if let pickedFolder { batchSourceFolder = pickedFolder }
+                if let inferredFolder { batchSourceFolder = inferredFolder }
                 stagedSourceMedia = uniqueURLs(stagedSourceMedia + media)
                 stagedSourceSubtitles = uniqueURLs(stagedSourceSubtitles + subs)
             }
         } else {
+            let inferredFolder = pickedFolder ?? media.first?.deletingLastPathComponent()
             if replaceExisting || !isBatchInQueueStage {
-                batchTargetFolder = pickedFolder ?? (media.count == 1 ? nil : batchTargetFolder)
+                batchTargetFolder = inferredFolder ?? batchTargetFolder
                 stagedTargetMedia = uniqueURLs(replaceExisting ? media : (isBatchInQueueStage ? stagedTargetMedia + media : media))
             } else {
-                if let pickedFolder { batchTargetFolder = pickedFolder }
+                if let inferredFolder { batchTargetFolder = inferredFolder }
                 stagedTargetMedia = uniqueURLs(stagedTargetMedia + media)
             }
         }
@@ -634,12 +652,121 @@ final class AppModel {
         statusNotice = "Applied batch track rules to \(batchJobs.count) episode(s)"
     }
 
+    func reselectBatchSource(for job: EpisodeJob) {
+        guard job.status != .running else { return }
+        guard let url = pickSingleFile(
+            title: "Choose Source Media",
+            allowedExtensions: Array(EpisodePairing.mediaExtensions),
+            initialDirectory: effectiveBatchSourceDirectory
+        ) else { return }
+
+        if let previous = job.sourceURL {
+            stagedSourceMedia.removeAll { $0.path == previous.path }
+        }
+        job.sourceURL = url
+        job.sourceProbe = nil
+        job.selectedSourceAudioID = nil
+        job.selectedSubtitleIDs = []
+        if batchSourceFolder == nil {
+            batchSourceFolder = url.deletingLastPathComponent()
+        }
+        stagedSourceMedia = uniqueURLs(stagedSourceMedia + [url])
+        if let key = EpisodePairing.extractEpisodeKey(from: url.lastPathComponent),
+           job.episodeBadge.isEmpty || job.episodeBadge.hasPrefix("#") {
+            job.episodeBadge = key.displayBadge
+        }
+        if job.targetURL != nil {
+            markVerified(job)
+        } else {
+            job.matchKind = .unmatched
+            job.isVerified = false
+            syncMenuState()
+        }
+        Task { await probeBatchJob(job) }
+    }
+
+    func reselectBatchTarget(for job: EpisodeJob) {
+        guard job.status != .running else { return }
+        guard let url = pickSingleFile(
+            title: "Choose Target Media",
+            allowedExtensions: Array(EpisodePairing.mediaExtensions),
+            initialDirectory: effectiveBatchTargetDirectory
+        ) else { return }
+
+        if let previous = job.targetURL {
+            stagedTargetMedia.removeAll { $0.path == previous.path }
+        }
+        job.targetURL = url
+        job.targetProbe = nil
+        job.selectedTargetAudioID = nil
+        if batchTargetFolder == nil {
+            batchTargetFolder = url.deletingLastPathComponent()
+        }
+        stagedTargetMedia = uniqueURLs(stagedTargetMedia + [url])
+        if job.sourceURL != nil {
+            markVerified(job)
+        } else {
+            job.matchKind = .unmatched
+            job.isVerified = false
+            syncMenuState()
+        }
+        Task { await probeBatchJob(job) }
+    }
+
+    func removeBatchSource(for job: EpisodeJob) {
+        guard job.status != .running else { return }
+        if let previous = job.sourceURL {
+            stagedSourceMedia.removeAll { $0.path == previous.path }
+        }
+        job.sourceURL = nil
+        job.sourceProbe = nil
+        job.selectedSourceAudioID = nil
+        job.selectedSubtitleIDs = []
+        job.matchKind = .unmatched
+        job.isVerified = false
+        job.resetForRetry()
+        syncMenuState()
+    }
+
+    func removeBatchTarget(for job: EpisodeJob) {
+        guard job.status != .running else { return }
+        if let previous = job.targetURL {
+            stagedTargetMedia.removeAll { $0.path == previous.path }
+        }
+        job.targetURL = nil
+        job.targetProbe = nil
+        job.selectedTargetAudioID = nil
+        job.matchKind = .unmatched
+        job.isVerified = false
+        job.resetForRetry()
+        syncMenuState()
+    }
+
+    func removeBatchJob(_ job: EpisodeJob, undoManager: UndoManager?) {
+        guard job.status != .running else { return }
+        removeBatchJobs(ids: [job.id], undoManager: undoManager)
+    }
+
     func removeBatchJobs(ids: Set<UUID>, undoManager: UndoManager?) {
+        let removableIDs = ids.filter { id in
+            batchJobs.first(where: { $0.id == id })?.status != .running
+        }
+        guard !removableIDs.isEmpty else { return }
+
         let snapshot = batchJobs
         let oldSelection = selectedBatchJobIDs
         let oldStage = isBatchInQueueStage
-        let removedIndices = batchJobs.enumerated().filter { ids.contains($0.element.id) }.map(\.offset)
-        batchJobs.removeAll { ids.contains($0.id) }
+        let oldSources = stagedSourceMedia
+        let oldTargets = stagedTargetMedia
+        let removedJobs = batchJobs.filter { removableIDs.contains($0.id) }
+        let removedSourcePaths = Set(removedJobs.compactMap { $0.sourceURL?.path })
+        let removedTargetPaths = Set(removedJobs.compactMap { $0.targetURL?.path })
+
+        let removedIndices = batchJobs.enumerated().filter { removableIDs.contains($0.element.id) }.map(\.offset)
+        batchJobs.removeAll { removableIDs.contains($0.id) }
+        stagedSourceMedia.removeAll { removedSourcePaths.contains($0.path) }
+        stagedTargetMedia.removeAll { removedTargetPaths.contains($0.path) }
+
         if let firstIdx = removedIndices.first, !batchJobs.isEmpty {
             let nextIdx = min(firstIdx, batchJobs.count - 1)
             selectedBatchJobIDs = [batchJobs[nextIdx].id]
@@ -659,8 +786,11 @@ final class AppModel {
             target.batchJobs = snapshot
             target.selectedBatchJobIDs = oldSelection
             target.isBatchInQueueStage = oldStage
+            target.stagedSourceMedia = oldSources
+            target.stagedTargetMedia = oldTargets
         }
         undoManager?.setActionName("Remove Episodes")
+        syncMenuState()
     }
 
     func addEmptyBatchRow() {
@@ -1068,12 +1198,13 @@ final class AppModel {
         }
     }
 
-    func pickSingleFile(title: String, allowedExtensions: [String]) -> URL? {
+    func pickSingleFile(title: String, allowedExtensions: [String], initialDirectory: URL? = nil) -> URL? {
         let panel = NSOpenPanel()
         panel.title = title
         panel.canChooseFiles = true
         panel.canChooseDirectories = false
         panel.allowsMultipleSelection = false
+        panel.directoryURL = initialDirectory
         panel.allowedContentTypes = allowedExtensions.compactMap { UTType(filenameExtension: $0) }
         return panel.runModal() == .OK ? panel.url : nil
     }

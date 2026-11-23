@@ -45,6 +45,7 @@ enum SelfTest {
                 "play.fill", "pause.fill", "stop.fill", "arrow.counterclockwise",
                 "checkmark.circle", "checkmark.circle.fill", "exclamationmark.circle",
                 "plus", "clock", "ellipsis.circle", "slider.horizontal.3",
+                "questionmark.circle", "xmark",
             ]
         let missingSymbols = symbols.filter { NSImage(systemSymbolName: $0, accessibilityDescription: nil) == nil }
         check("all SF Symbols valid", missingSymbols.isEmpty, detail: missingSymbols.joined(separator: ", "))
@@ -73,6 +74,15 @@ enum SelfTest {
         check(
             "regex episode pairing starts unverified",
             regexPaired.count == 1 && regexPaired[0].matchKind == .episodeRegex && !regexPaired[0].isVerified
+        )
+
+        let seasonConflict = EpisodePairing.pairFiles(
+            sources: [URL(fileURLWithPath: "/src/Show.S01E05.mkv")],
+            targets: [URL(fileURLWithPath: "/dst/Show.S02E05.mkv")]
+        )
+        check(
+            "different explicit seasons never match",
+            seasonConflict.count == 2 && seasonConflict.allSatisfy { $0.matchKind == .unmatched }
         )
 
         var sync = SyncSettings()

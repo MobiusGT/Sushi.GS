@@ -46,7 +46,7 @@ struct BatchQueueView: View {
 
                     VStack(spacing: 0) {
                         queueListSection
-                            .frame(minHeight: 168, maxHeight: 232)
+                            .frame(minHeight: 168, maxHeight: 256)
                         Divider()
                         selectedEpisodeEditor
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -299,7 +299,12 @@ struct BatchQueueView: View {
             ForEach(model.batchJobs) { job in
                 BatchJobRow(
                     job: job,
-                    onToggleVerify: { model.toggleVerification(for: job) }
+                    onToggleVerify: { model.toggleVerification(for: job) },
+                    onReselectSource: { model.reselectBatchSource(for: job) },
+                    onReselectTarget: { model.reselectBatchTarget(for: job) },
+                    onRemoveSource: { model.removeBatchSource(for: job) },
+                    onRemoveTarget: { model.removeBatchTarget(for: job) },
+                    onRemoveRow: { model.removeBatchJob(job, undoManager: undoManager) }
                 )
                 .tag(job.id)
                 .contextMenu {
@@ -309,6 +314,27 @@ struct BatchQueueView: View {
                         }
                         Divider()
                     }
+                    Button(job.sourceURL == nil ? "Choose Source File…" : "Reselect Source File…") {
+                        model.reselectBatchSource(for: job)
+                    }
+                    .disabled(job.status == .running)
+                    Button(job.targetURL == nil ? "Choose Target File…" : "Reselect Target File…") {
+                        model.reselectBatchTarget(for: job)
+                    }
+                    .disabled(job.status == .running)
+                    if job.sourceURL != nil {
+                        Button("Remove Source File") {
+                            model.removeBatchSource(for: job)
+                        }
+                        .disabled(job.status == .running)
+                    }
+                    if job.targetURL != nil {
+                        Button("Remove Target File") {
+                            model.removeBatchTarget(for: job)
+                        }
+                        .disabled(job.status == .running)
+                    }
+                    Divider()
                     if job.status == .failed || job.status == .warned || job.status == .cancelled {
                         Button("Retry Episode") {
                             job.resetForRetry()
@@ -333,12 +359,13 @@ struct BatchQueueView: View {
                         }
                     }
                     Divider()
-                    Button("Remove from Queue", role: .destructive) {
+                    Button("Remove Row", role: .destructive) {
                         let targets = model.selectedBatchJobIDs.contains(job.id)
                             ? model.selectedBatchJobIDs
                             : [job.id]
                         model.removeBatchJobs(ids: targets, undoManager: undoManager)
                     }
+                    .disabled(job.status == .running)
                 }
             }
         }
@@ -408,42 +435,52 @@ struct BatchQueueView: View {
                         GridRow {
                             Text("Source File").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
                             HStack(spacing: Space.sm) {
-                                Text(job.sourceURL?.lastPathComponent ?? "Not assigned")
+                                Text(job.sourceURL?.lastPathComponent ?? "No match found")
                                     .lineLimit(1)
                                     .truncationMode(.middle)
-                                    .foregroundStyle(job.sourceURL == nil ? .secondary : .primary)
-                                    .help(job.sourceURL?.path ?? "")
+                                    .foregroundStyle(job.sourceURL == nil ? Surfaces.statusWarning : .primary)
+                                    .help(job.sourceURL?.path ?? "No matching Source file was found")
                                 Spacer()
-                                Button("Choose…") {
-                                    if let url = model.pickSingleFile(title: "Choose Source Media", allowedExtensions: Array(EpisodePairing.mediaExtensions)) {
-                                        job.sourceURL = url
-                                        if job.targetURL != nil {
-                                            model.markVerified(job)
-                                        }
-                                        Task { await model.probeBatchJob(job) }
+                                if job.sourceURL != nil {
+                                    Button("Remove") {
+                                        model.removeBatchSource(for: job)
                                     }
+                                    .controlSize(.small)
+                                    .disabled(job.status == .running)
+                                    .hoverDescription("Clear the Source file from this row")
+                                }
+                                Button(job.sourceURL == nil ? "Choose File…" : "Reselect…") {
+                                    model.reselectBatchSource(for: job)
                                 }
                                 .controlSize(.small)
+                                .disabled(job.status == .running)
+                                .hoverDescription("Choose a Source file starting in the selected Source folder")
                             }
                         }
 
                         GridRow {
                             Text("Target File").foregroundStyle(.secondary)
                             HStack(spacing: Space.sm) {
-                                Text(job.targetURL?.lastPathComponent ?? "Not assigned")
+                                Text(job.targetURL?.lastPathComponent ?? "No match found")
                                     .lineLimit(1)
                                     .truncationMode(.middle)
-                                    .foregroundStyle(job.targetURL == nil ? .secondary : .primary)
-                                    .help(job.targetURL?.path ?? "")
+                                    .foregroundStyle(job.targetURL == nil ? Surfaces.statusWarning : .primary)
+                                    .help(job.targetURL?.path ?? "No matching Target file was found")
                                 Spacer()
-                                Button("Choose…") {
-                                    if let url = model.pickSingleFile(title: "Choose Target Media", allowedExtensions: Array(EpisodePairing.mediaExtensions)) {
-                                        job.targetURL = url
-                                        model.markVerified(job)
-                                        Task { await model.probeBatchJob(job) }
+                                if job.targetURL != nil {
+                                    Button("Remove") {
+                                        model.removeBatchTarget(for: job)
                                     }
+                                    .controlSize(.small)
+                                    .disabled(job.status == .running)
+                                    .hoverDescription("Clear the Target file from this row")
+                                }
+                                Button(job.targetURL == nil ? "Choose File…" : "Reselect…") {
+                                    model.reselectBatchTarget(for: job)
                                 }
                                 .controlSize(.small)
+                                .disabled(job.status == .running)
+                                .hoverDescription("Choose a Target file starting in the selected Target folder")
                             }
                         }
                     }
@@ -458,7 +495,11 @@ struct BatchQueueView: View {
                         job: job,
                         markAsCustomOverride: true,
                         onChooseExternalSub: {
-                            if let url = model.pickSingleFile(title: "Choose External Subtitle", allowedExtensions: Array(EpisodePairing.subtitleExtensions)) {
+                            if let url = model.pickSingleFile(
+                                title: "Choose External Subtitle",
+                                allowedExtensions: Array(EpisodePairing.subtitleExtensions),
+                                initialDirectory: model.effectiveBatchSourceDirectory
+                            ) {
                                 job.externalSubtitleURL = url
                                 job.useExternalSubtitle = true
                                 job.hasCustomTrackOverrides = true
@@ -670,34 +711,55 @@ private final class URLCollector {
     }
 }
 
-// MARK: - Stage 2 Queue Row with Fast 1-Click Verification
+// MARK: - Stage 2 Queue Row with Fast 1-Click Verification & Row File Controls
 
 private struct BatchJobRow: View {
     let job: EpisodeJob
     let onToggleVerify: () -> Void
+    let onReselectSource: () -> Void
+    let onReselectTarget: () -> Void
+    let onRemoveSource: () -> Void
+    let onRemoveTarget: () -> Void
+    let onRemoveRow: () -> Void
+
+    private var isIncompletePair: Bool {
+        job.sourceURL == nil || job.targetURL == nil
+    }
 
     var body: some View {
-        HStack(spacing: Space.md) {
+        HStack(spacing: Space.sm) {
             Text(job.episodeBadge)
                 .font(.caption.monospacedDigit().weight(.semibold))
                 .foregroundStyle(.secondary)
-                .frame(width: 56, alignment: .leading)
+                .frame(width: 52, alignment: .leading)
 
             VStack(alignment: .leading, spacing: 2) {
                 HStack(spacing: Space.xs) {
-                    Text(job.sourceURL?.lastPathComponent ?? "Missing Source")
-                        .font(.body)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .foregroundStyle(job.sourceURL == nil ? Surfaces.statusError : .primary)
+                    if let src = job.sourceURL {
+                        Text(src.lastPathComponent)
+                            .font(.body)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(.primary)
+                            .help(src.path)
+                    } else {
+                        missingFileSlot(label: "Choose File…", help: "Choose Source file from the selected Source folder", action: onReselectSource)
+                    }
+
                     Image(systemName: "arrow.right")
                         .font(.caption2)
                         .foregroundStyle(.tertiary)
-                    Text(job.targetURL?.lastPathComponent ?? "Missing Target")
-                        .font(.body)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .foregroundStyle(job.targetURL == nil ? Surfaces.statusError : .primary)
+
+                    if let dst = job.targetURL {
+                        Text(dst.lastPathComponent)
+                            .font(.body)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .foregroundStyle(.primary)
+                            .help(dst.path)
+                    } else {
+                        missingFileSlot(label: "Choose File…", help: "Choose Target file from the selected Target folder", action: onReselectTarget)
+                    }
                 }
 
                 HStack(spacing: Space.md) {
@@ -714,12 +776,14 @@ private struct BatchJobRow: View {
                         Text("Custom Override")
                             .foregroundStyle(Palette.accentText)
                     }
-                    if job.isAutoVerifiedExactMatch && job.isVerified {
-                        Text("Exact Name")
-                            .foregroundStyle(Surfaces.statusSuccess)
-                    } else if !job.isVerified && job.sourceURL != nil && job.targetURL != nil {
-                        Text("Unverified")
-                            .foregroundStyle(Surfaces.statusWarning)
+                    if !isIncompletePair {
+                        if job.isAutoVerifiedExactMatch && job.isVerified {
+                            Text("Exact Name")
+                                .foregroundStyle(Surfaces.statusSuccess)
+                        } else if !job.isVerified {
+                            Text(job.matchKind == .titleSimilarity ? "Title Match · Unverified" : "Unverified")
+                                .foregroundStyle(Surfaces.statusWarning)
+                        }
                     }
                 }
                 .font(.caption)
@@ -729,7 +793,7 @@ private struct BatchJobRow: View {
 
             Spacer(minLength: Space.sm)
 
-            if job.sourceURL != nil && job.targetURL != nil {
+            if !isIncompletePair {
                 verificationControl
             }
 
@@ -748,9 +812,65 @@ private struct BatchJobRow: View {
                     .foregroundStyle(Surfaces.statusSuccess)
             }
 
-            JobStatusBadge(status: job.status)
+            if isIncompletePair && job.status == .pending {
+                Label("No match found", systemImage: "questionmark.circle")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Surfaces.statusWarning)
+                    .padding(.horizontal, Space.sm)
+                    .padding(.vertical, Space.xs)
+                    .background(Surfaces.statusWarning.opacity(0.14), in: Capsule())
+            } else {
+                JobStatusBadge(status: job.status)
+            }
+
+            rowActionMenu
+
+            Button(action: onRemoveRow) {
+                Image(systemName: "xmark")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .disabled(job.status == .running)
+            .hoverDescription("Remove this row from the batch list")
         }
         .padding(.vertical, Space.xs)
+    }
+
+    private func missingFileSlot(label: String, help: String, action: @escaping () -> Void) -> some View {
+        HStack(spacing: Space.xs) {
+            Text("No match found")
+                .font(.body)
+                .foregroundStyle(Surfaces.statusWarning)
+                .lineLimit(1)
+            Button(label, action: action)
+                .controlSize(.mini)
+                .disabled(job.status == .running)
+                .hoverDescription(help)
+        }
+    }
+
+    private var rowActionMenu: some View {
+        Menu {
+            Button(job.sourceURL == nil ? "Choose Source File…" : "Reselect Source File…", action: onReselectSource)
+            Button(job.targetURL == nil ? "Choose Target File…" : "Reselect Target File…", action: onReselectTarget)
+            Divider()
+            Button("Remove Source File", action: onRemoveSource)
+                .disabled(job.sourceURL == nil)
+            Button("Remove Target File", action: onRemoveTarget)
+                .disabled(job.targetURL == nil)
+            Divider()
+            Button("Remove Row", role: .destructive, action: onRemoveRow)
+        } label: {
+            Image(systemName: "ellipsis.circle")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .disabled(job.status == .running)
+        .hoverDescription("Reselect or remove Source/Target files, or remove this row")
     }
 
     @ViewBuilder
@@ -777,7 +897,7 @@ private struct BatchJobRow: View {
                     .background(Surfaces.statusWarning.opacity(0.14), in: Capsule())
             }
             .buttonStyle(.plain)
-            .hoverDescription("Unverified regex match — click to confirm this Source → Target pairing")
+            .hoverDescription("Unverified pairing — click to confirm this Source → Target match")
         }
     }
 }

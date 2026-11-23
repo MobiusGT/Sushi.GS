@@ -7,6 +7,8 @@ dist/
 *.dmg
 *.dmg.sha256
 *.xcuserdata/
+*-layout.json
+shots/
 Resources/Assets.car
 Resources/AppIcon.icns
 Resources/AboutIcon.png

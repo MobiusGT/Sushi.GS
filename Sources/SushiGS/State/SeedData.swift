@@ -138,6 +138,19 @@ enum SeedData {
             job.logs = single.logs
             jobs.append(job)
         }
+        // Add an explicitly unmatched entry to verify the "No match found" + Choose File... row UI.
+        let unmatchedJob = EpisodeJob(
+            episodeBadge: "S02E01",
+            matchKind: .unmatched,
+            isVerified: false,
+            sourceURL: URL(fileURLWithPath: "/Volumes/Media/WEB-DL/[SubsPlease] Frieren S02E01 (1080p).mkv"),
+            targetURL: nil,
+            selectedSourceAudioID: 1,
+            selectedSubtitleIDs: [3]
+        )
+        unmatchedJob.sourceProbe = srcProbe
+        jobs.append(unmatchedJob)
+
         model.batchSourceFolder = URL(fileURLWithPath: "/Volumes/Media/WEB-DL")
         model.batchTargetFolder = URL(fileURLWithPath: "/Volumes/Media/BluRay")
         model.stagedSourceMedia = jobs.compactMap(\.sourceURL)

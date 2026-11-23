@@ -27,7 +27,7 @@ jobs:
           sw_vers
           swift --version
           xcodebuild -version
-          python3 -m py_compile Resources/worker.py
+          python3 -B -m py_compile Resources/worker.py
 
       - name: Run SushiGSKit unit tests
         run: swift test
