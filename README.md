@@ -29,7 +29,7 @@ A native Apple Silicon (`arm64`) **macOS 26+** SwiftUI subtitle retiming and MKV
     <td width="50%" valign="top" align="center">
       <img src="docs/screenshots/batch-intake.png" alt="Auto Batch folder intake with Embedded/External switch in Dark Mode">
       <br>
-      <strong>Auto Batch Intake (Embedded &amp; External)</strong><br>
+      <strong>Auto Batch Intake</strong><br>
     </td>
   </tr>
   <tr>
@@ -41,7 +41,7 @@ A native Apple Silicon (`arm64`) **macOS 26+** SwiftUI subtitle retiming and MKV
     <td width="50%" valign="top" align="center">
       <img src="docs/screenshots/manual-batch.png" alt="Manual Batch 4-column workspace with native File Browser in Dark Mode">
       <br>
-      <strong>Manual Batch (Native File Browser &amp; Columns)</strong><br>
+      <strong>Manual Batch</strong><br>
     </td>
   </tr>
   <tr>
