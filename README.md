@@ -69,11 +69,11 @@ A native Apple Silicon (`arm64`) **macOS 26+** SwiftUI subtitle retiming and MKV
 
 ---
 
-## Installation (`Sushi.GS-0.1.0-arm64.dmg`)
+## Installation
 
 Requires an **Apple Silicon Mac running macOS 26+**.
 
-1. Download **`Sushi.GS-0.1.0-arm64.dmg`** (and optionally **`Sushi.GS-0.1.0-arm64.dmg.sha256`**) from [GitHub Releases](https://github.com/MobiusGT/Sushi.GS/releases).
+1. Download the latest **`Sushi.GS.dmg`** from [GitHub Releases](https://github.com/MobiusGT/Sushi.GS/releases).
 2. Open the `.dmg` and drag **`Sushi.GS.app`** into **`Applications`**.
 3. Launch **`Sushi.GS`** from `/Applications`, Spotlight, or the Apps drawer (its window title bar displays **Gas Station Sushi**).
 4. On first launch, click **Install Required Dependencies** in the **Dependencies** view to provision `uv`, Python 3.13, `sushi-batch`, `ffmpeg`, and `ffprobe` automatically.
