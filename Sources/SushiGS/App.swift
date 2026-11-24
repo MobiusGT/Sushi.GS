@@ -34,7 +34,7 @@ struct SushiGSApp: App {
                     await model.bootstrapOnLaunch()
                 }
         }
-        .defaultSize(width: 1240, height: 760)
+        .defaultSize(width: 1280, height: 800)
         .commands {
             SidebarCommands()
             ToolbarCommands()
@@ -57,16 +57,24 @@ struct SushiGSApp: App {
                 }
                 .keyboardShortcut("o", modifiers: [.command, .shift])
 
-                Button("Add Source Folder…") {
+                Divider()
+
+                Button("Add Source Media Folder…") {
                     model.pickBatchSourceFolder(replaceExisting: !model.isBatchInQueueStage)
                 }
                 .keyboardShortcut("o", modifiers: [.command, .option])
                 .disabled(menuState.isRunning)
 
-                Button("Add Target Folder…") {
+                Button("Add Target Media Folder…") {
                     model.pickBatchTargetFolder(replaceExisting: !model.isBatchInQueueStage)
                 }
                 .keyboardShortcut("o", modifiers: [.command, .option, .shift])
+                .disabled(menuState.isRunning)
+
+                Button("Add External Subtitle Folder…") {
+                    model.pickBatchSubtitleFolder(replaceExisting: !model.isBatchInQueueStage)
+                }
+                .keyboardShortcut("o", modifiers: [.command, .option, .control])
                 .disabled(menuState.isRunning)
 
                 Divider()
@@ -90,10 +98,12 @@ struct SushiGSApp: App {
                 Divider()
                 Button("Single Episode") { model.sidebar = .singleEpisode }
                     .keyboardShortcut("1", modifiers: [.command])
-                Button("Batch Queue") { model.sidebar = .batchQueue }
+                Button("Auto Batch") { model.sidebar = .autoBatch }
                     .keyboardShortcut("2", modifiers: [.command])
-                Button("Dependencies") { model.sidebar = .dependencies }
+                Button("Manual Batch") { model.sidebar = .manualBatch }
                     .keyboardShortcut("3", modifiers: [.command])
+                Button("Dependencies") { model.sidebar = .dependencies }
+                    .keyboardShortcut("4", modifiers: [.command])
             }
 
             CommandMenu("Queue") {
@@ -142,10 +152,15 @@ struct SushiGSApp: App {
                 .keyboardShortcut("k", modifiers: [.command, .shift])
                 .disabled(!menuState.canClearSingle)
 
-                Button("Clear Batch Queue…") {
+                Button("Clear Auto Batch…") {
                     model.requestClearBatchQueue()
                 }
                 .disabled(!menuState.canClearBatch)
+
+                Button("Clear Manual Batch…") {
+                    model.requestClearManualBatch()
+                }
+                .disabled(!menuState.canClearManualBatch)
 
                 Divider()
 

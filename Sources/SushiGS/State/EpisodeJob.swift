@@ -81,6 +81,23 @@ final class EpisodeJob: Identifiable {
         return "Untitled Episode"
     }
 
+    /// True when all required media/subtitle file paths are populated for this job's subtitle mode.
+    var hasPairedFiles: Bool {
+        guard sourceURL != nil, targetURL != nil else { return false }
+        if useExternalSubtitle {
+            return externalSubtitleURL != nil
+        }
+        return true
+    }
+
+    func isComplete(for subtitleMode: BatchSubtitleMode) -> Bool {
+        guard sourceURL != nil, targetURL != nil else { return false }
+        switch subtitleMode {
+        case .embedded: return true
+        case .external: return externalSubtitleURL != nil
+        }
+    }
+
     var hasRequiredInputs: Bool {
         guard sourceURL != nil, targetURL != nil else { return false }
         if useExternalSubtitle {

@@ -7,9 +7,9 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Release version (e.g. 0.1.0)'
+        description: 'Release version (e.g. 0.1.1)'
         required: false
-        default: '0.1.0'
+        default: '0.1.1'
 
 permissions:
   contents: write
@@ -38,7 +38,7 @@ jobs:
           if [[ "${{ github.ref_type }}" == "tag" ]]; then
             VERSION="${GITHUB_REF_NAME#v}"
           else
-            VERSION="${{ github.event.inputs.version || '0.1.0' }}"
+            VERSION="${{ github.event.inputs.version || '0.1.1' }}"
           fi
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "build=${{ github.run_number }}" >> "$GITHUB_OUTPUT"

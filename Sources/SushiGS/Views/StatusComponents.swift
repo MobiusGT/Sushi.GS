@@ -35,6 +35,9 @@ enum SushiHelpText {
     static let copyTargetSubtitles = "Keep original subtitle tracks from the Target MKV alongside the newly synced subtitle."
     static let copyTargetTags = "Preserve global and per-track metadata tags from the Target MKV."
     static let customOutputDir = "Write synced subtitles and Merged Files to a chosen folder instead of beside each Target file."
+    static let subtitleModeSwitch = "Embedded uses subtitle tracks inside Source videos; External pairs standalone .ass, .srt, or .ssa subtitle files."
+    static let embeddedSubtitlesMode = "Use subtitle tracks embedded inside the Source video files."
+    static let externalSubtitlesMode = "Pair standalone .ass, .srt, or .ssa files from an external subtitle folder."
 }
 
 extension View {
@@ -773,6 +776,79 @@ struct TrackSelectionCard: View {
                     .foregroundStyle(.secondary)
                 Button("Choose Subtitle…", action: onChooseExternalSub)
                     .controlSize(.small)
+            }
+        }
+    }
+}
+
+/// Shared popover for configuring batch-wide Source Audio, Target Audio, and Embedded Subtitle track rules.
+struct BatchTrackRulesPopover: View {
+    @Binding var srcAudioRule: BatchTrackRule
+    @Binding var dstAudioRule: BatchTrackRule
+    @Binding var subRule: BatchTrackRule
+    var showSubtitleRule: Bool = true
+    let onApply: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.lg) {
+            Text("Batch Track Rules")
+                .font(.headline)
+            Text(
+                showSubtitleRule
+                    ? "Choose how audio and embedded subtitle tracks are matched across all episodes. Individual episodes can still override these rules."
+                    : "Choose how Source Audio and Target Audio tracks are matched across all episodes in External subtitle mode."
+            )
+            .font(.caption)
+            .foregroundStyle(.secondary)
+
+            ruleEditor(title: "Source Audio", rule: $srcAudioRule)
+            Divider()
+            ruleEditor(title: "Target Audio", rule: $dstAudioRule)
+            if showSubtitleRule {
+                Divider()
+                ruleEditor(title: "Source Subtitle", rule: $subRule)
+            }
+
+            HStack {
+                Spacer()
+                Button("Apply Rules to All Episodes") {
+                    onApply()
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(Space.lg)
+        .frame(width: 380)
+    }
+
+    private func ruleEditor(title: String, rule: Binding<BatchTrackRule>) -> some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            Text(title).font(.callout.weight(.medium))
+            Picker("Rule", selection: rule.mode) {
+                ForEach(BatchTrackRule.MatchMode.allCases, id: \.self) { mode in
+                    Text(mode.displayName).tag(mode)
+                }
+            }
+            .labelsHidden()
+
+            switch rule.wrappedValue.mode {
+            case .firstOrDefault:
+                EmptyView()
+            case .trackPosition:
+                Stepper("Track #\(rule.wrappedValue.trackPosition)", value: rule.trackPosition, in: 1...16)
+                    .font(.callout)
+            case .streamID:
+                Stepper("Stream ID \(rule.wrappedValue.streamID)", value: rule.streamID, in: 0...32)
+                    .font(.callout)
+            case .languageAndTitle:
+                HStack(spacing: Space.sm) {
+                    TextField("Language (e.g. jpn, eng)", text: rule.languageFilter)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Title contains…", text: rule.titleContains)
+                        .textFieldStyle(.roundedBorder)
+                }
             }
         }
     }

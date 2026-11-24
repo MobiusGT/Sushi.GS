@@ -10,6 +10,7 @@ struct BatchQueueView: View {
     @State private var showTrackRulesPopover = false
     @State private var isDropSourceTargeted = false
     @State private var isDropTargetTargeted = false
+    @State private var isDropSubtitleTargeted = false
 
     var body: some View {
         @Bindable var model = model
@@ -32,10 +33,10 @@ struct BatchQueueView: View {
             } else {
                 VStack(alignment: .leading, spacing: Space.md) {
                     VStack(alignment: .leading, spacing: Space.sm) {
-                        batchPrimaryHeaderBar
+                        batchFolderActionBar
                             .gridProbe("batchHeader", area: "batch")
 
-                        batchSecondaryHeaderBar
+                        batchTransportHeaderBar
                             .gridProbe("batchSubHeader", area: "batch")
 
                         InlineSyncOptionsStrip(includeHQToggle: true, framedAsCard: true)
@@ -59,7 +60,7 @@ struct BatchQueueView: View {
         }
         .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
         .confirmationDialog(
-            "Clear Batch Queue?",
+            "Clear Auto Batch?",
             isPresented: $model.showClearBatchConfirmation,
             titleVisibility: .visible
         ) {
@@ -72,82 +73,144 @@ struct BatchQueueView: View {
         }
     }
 
-    // MARK: - Stage 1: Two-Folder Intake
+    // MARK: - Stage 1: Folder Intake (Embedded 2-Folder / External 3-Folder)
 
     private var batchIntakeView: some View {
-        ScrollView {
+        @Bindable var model = model
+        let isExternal = model.batchSubtitleMode == .external
+
+        return ScrollView {
             VStack(alignment: .leading, spacing: Space.xl) {
-                VStack(alignment: .leading, spacing: Space.xs) {
-                    HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
-                        Image(systemName: "square.stack.3d.up")
-                            .font(.title2)
-                            .foregroundStyle(Palette.accent)
-                        Text(intakeHeadline)
-                            .font(.title2.weight(.semibold))
+                HStack(alignment: .top, spacing: Space.lg) {
+                    VStack(alignment: .leading, spacing: Space.xs) {
+                        HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+                            Image(systemName: "square.stack.3d.up")
+                                .font(.title2)
+                                .foregroundStyle(Palette.accent)
+                            Text(intakeHeadline)
+                                .font(.title2.weight(.semibold))
+                        }
+                        Text(intakeSubheadline)
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
                     }
-                    Text(intakeSubheadline)
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+
+                    Spacer(minLength: Space.sm)
+
+                    HStack(spacing: Space.sm) {
+                        Text("Subtitles")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Picker("Subtitle Mode", selection: $model.batchSubtitleMode) {
+                            Text("Embedded")
+                                .tag(BatchSubtitleMode.embedded)
+                                .help(SushiHelpText.embeddedSubtitlesMode)
+                            Text("External")
+                                .tag(BatchSubtitleMode.external)
+                                .help(SushiHelpText.externalSubtitlesMode)
+                        }
+                        .labelsHidden()
+                        .pickerStyle(.segmented)
+                        .frame(width: 176)
+                        .hoverDescription(SushiHelpText.subtitleModeSwitch)
+                    }
+                    .hoverDescription(SushiHelpText.subtitleModeSwitch)
                 }
                 .gridProbe("intakeTitle", area: "batch-intake")
 
-                HStack(alignment: .top, spacing: Space.lg) {
+                HStack(alignment: .top, spacing: isExternal ? Space.md : Space.lg) {
                     BatchIntakeFolderCard(
-                        title: "Source Folder",
-                        emptyPrompt: "Drop the folder containing your source videos and subtitles",
-                        chooseLabel: "Choose Source Folder…",
+                        title: "Source Media Folder",
+                        emptyPrompt: isExternal
+                            ? "Drop the folder with your source videos"
+                            : "Drop the folder with your source videos and embedded subtitles",
+                        chooseLabel: "Choose Folder…",
                         symbol: "folder.badge.plus",
                         isReady: model.hasStagedSource,
                         folderURL: model.batchSourceFolder,
-                        mediaCount: model.stagedSourceMedia.count,
-                        subtitleCount: model.stagedSourceSubtitles.count,
+                        itemCount: model.stagedSourceMedia.count,
+                        itemUnitSingular: "media file",
+                        itemUnitPlural: "media files",
+                        itemCountSymbol: "film",
+                        compactHeader: isExternal,
                         isTargeted: $isDropSourceTargeted,
                         onChoose: { model.pickBatchSourceFolder(replaceExisting: true) },
-                        onDrop: { urls in model.stageBatchInput(urls, asSource: true, replaceExisting: true) },
+                        onDrop: { urls in model.stageBatchInput(urls, slot: .sourceMedia, replaceExisting: true) },
                         onClear: { model.clearBatchSourceIntake() }
                     )
 
                     BatchIntakeFolderCard(
-                        title: "Target Folder",
-                        emptyPrompt: "Drop the folder containing the target videos to sync to",
-                        chooseLabel: "Choose Target Folder…",
+                        title: "Target Media Folder",
+                        emptyPrompt: "Drop the folder with the target videos to sync to",
+                        chooseLabel: "Choose Folder…",
                         symbol: "sparkles.tv",
                         isReady: model.hasStagedTarget,
                         folderURL: model.batchTargetFolder,
-                        mediaCount: model.stagedTargetMedia.count,
-                        subtitleCount: 0,
+                        itemCount: model.stagedTargetMedia.count,
+                        itemUnitSingular: "media file",
+                        itemUnitPlural: "media files",
+                        itemCountSymbol: "film",
+                        compactHeader: isExternal,
                         isTargeted: $isDropTargetTargeted,
                         onChoose: { model.pickBatchTargetFolder(replaceExisting: true) },
-                        onDrop: { urls in model.stageBatchInput(urls, asSource: false, replaceExisting: true) },
+                        onDrop: { urls in model.stageBatchInput(urls, slot: .targetMedia, replaceExisting: true) },
                         onClear: { model.clearBatchTargetIntake() }
                     )
+
+                    if isExternal {
+                        BatchIntakeFolderCard(
+                            title: "Subtitle Folder",
+                            emptyPrompt: "Drop a folder or .ass, .srt, .ssa files to pair",
+                            chooseLabel: "Choose Folder…",
+                            symbol: "captions.bubble",
+                            isReady: model.hasStagedExternalSubtitles,
+                            folderURL: model.batchSubtitleFolder,
+                            itemCount: model.stagedExternalSubtitles.count,
+                            itemUnitSingular: "subtitle file",
+                            itemUnitPlural: "subtitle files",
+                            itemCountSymbol: "captions.bubble",
+                            compactHeader: true,
+                            isTargeted: $isDropSubtitleTargeted,
+                            onChoose: { model.pickBatchSubtitleFolder(replaceExisting: true) },
+                            onDrop: { urls in model.stageBatchInput(urls, slot: .externalSubtitles, replaceExisting: true) },
+                            onClear: { model.clearBatchSubtitleIntake() }
+                        )
+                    }
                 }
                 .gridProbe("intakeCards", area: "batch-intake")
 
                 HStack(spacing: Space.md) {
-                    Button("Add Empty Row", systemImage: "plus") {
-                        model.addEmptyBatchRow()
+                    if model.hasAnyStagedBatchFolder {
+                        Button {
+                            model.continueToAutoBatchQueue()
+                        } label: {
+                            Label("Continue to Queue", systemImage: "arrow.right.circle")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.small)
+                        .hoverDescription("Open the pairing queue now with the files from your staged folder(s)")
+                    } else {
+                        Button("Continue to Queue", systemImage: "arrow.right.circle") {
+                            model.continueToAutoBatchQueue()
+                        }
+                        .controlSize(.small)
+                        .hoverDescription("Open the pairing queue with a blank editable row, or populate from any staged folders")
                     }
-                    .controlSize(.small)
-                    .hoverDescription("Open the pairing table with a blank episode row to assign files manually")
 
-                    if model.hasStagedSource || model.hasStagedTarget {
+                    if model.hasAnyStagedBatchFolder {
                         Button("Start Over", systemImage: "arrow.counterclockwise") {
                             model.clearBatchQueue()
                         }
                         .controlSize(.small)
-                        .hoverDescription("Clear staged folders and reset Batch Queue intake")
+                        .hoverDescription("Clear staged folders and reset Auto Batch intake")
                     }
 
                     Spacer()
 
-                    if model.hasStagedSource != model.hasStagedTarget {
-                        Label(
-                            model.hasStagedSource ? "Waiting for Target folder…" : "Waiting for Source folder…",
-                            systemImage: "clock"
-                        )
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    if let waitingText = intakeWaitingStatus {
+                        Label(waitingText, systemImage: "clock")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
                     }
                 }
                 .gridProbe("intakeFooter", area: "batch-intake")
@@ -158,85 +221,79 @@ struct BatchQueueView: View {
     }
 
     private var intakeHeadline: String {
-        if model.hasStagedSource && !model.hasStagedTarget {
-            return "Source Ready — Add Target Folder"
+        let progress = model.stagedFolderProgress
+        if progress.ready == 0 {
+            return model.batchSubtitleMode == .external
+                ? "Drop Source, Target & Subtitle Folders"
+                : "Drop Source & Target Media Folders"
         }
-        if !model.hasStagedSource && model.hasStagedTarget {
-            return "Target Ready — Add Source Folder"
+        let missing = missingIntakeFolderNames
+        if missing.count == 1 {
+            return "\(progress.ready) of \(progress.total) Ready — Add \(missing[0])"
         }
-        return "Drop Source & Target Folders"
+        return "\(progress.ready) of \(progress.total) Ready — Add Remaining Folders"
     }
 
     private var intakeSubheadline: String {
-        if model.hasStagedSource && !model.hasStagedTarget {
-            return "Now drop or choose your Target folder. Episodes will pair automatically once both folders are ready."
+        if model.batchSubtitleMode == .external {
+            return "Add all three folders to auto-pair Source, Target, and external subtitles, or click Continue to Queue with partial folders."
         }
-        if !model.hasStagedSource && model.hasStagedTarget {
-            return "Now drop or choose your Source folder. Episodes will pair automatically once both folders are ready."
+        return "Add both media folders to pair episodes automatically. Exact filename matches auto-verify; heuristic matches wait for quick verification."
+    }
+
+    private var missingIntakeFolderNames: [String] {
+        var names: [String] = []
+        if !model.hasStagedSource { names.append("Source Media Folder") }
+        if !model.hasStagedTarget { names.append("Target Media Folder") }
+        if model.batchSubtitleMode == .external && !model.hasStagedExternalSubtitles {
+            names.append("Subtitle Folder")
         }
-        return "Add both folders to pair episodes automatically. Exact filename matches are auto-verified; regex matches wait for quick verification."
+        return names
+    }
+
+    private var intakeWaitingStatus: String? {
+        let progress = model.stagedFolderProgress
+        guard progress.ready > 0, progress.ready < progress.total else { return nil }
+        let missing = missingIntakeFolderNames
+        if missing.count == 1 {
+            return "Waiting for \(missing[0])…"
+        }
+        return "Waiting for \(missing.joined(separator: " & "))…"
     }
 
     // MARK: - Stage 2: Queue Header Bars
 
-    private var batchPrimaryHeaderBar: some View {
+    private var batchFolderActionBar: some View {
         HStack(spacing: Space.sm) {
-            Button("Add Source Folder", systemImage: "folder.badge.plus") {
+            Button("Add Source Media Folder", systemImage: "folder.badge.plus") {
                 model.pickBatchSourceFolder(replaceExisting: false)
             }
             .controlSize(.small)
             .fixedSize()
             .disabled(model.isRunning)
-            .hoverDescription("Choose a Source folder to append and re-pair episodes (Option-Command-O)")
+            .hoverDescription("Choose a Source Media Folder to append and re-pair episodes (Option-Command-O)")
 
-            Button("Add Target Folder", systemImage: "sparkles.tv") {
+            Button("Add Target Media Folder", systemImage: "sparkles.tv") {
                 model.pickBatchTargetFolder(replaceExisting: false)
             }
             .controlSize(.small)
             .fixedSize()
             .disabled(model.isRunning)
-            .hoverDescription("Choose a Target folder to append and re-pair episodes (Option-Shift-Command-O)")
+            .hoverDescription("Choose a Target Media Folder to append and re-pair episodes (Option-Shift-Command-O)")
 
-            Spacer(minLength: Space.sm)
-
-            if model.isRunning {
-                Button(model.isPaused ? "Resume" : "Pause", systemImage: model.isPaused ? "play.fill" : "pause.fill") {
-                    model.togglePauseQueue()
-                }
-                .controlSize(.small)
-                .fixedSize()
-                .hoverDescription("Pause or resume after the current episode finishes (Option-Command-P)")
-
-                Button(model.isCancelling ? "Cancelling…" : "Cancel", role: .destructive) {
-                    model.cancelActiveJob()
-                }
-                .controlSize(.small)
-                .fixedSize()
-                .disabled(model.isCancelling)
-                .hoverDescription("Cancel the active episode and delete its temporary and partial files (Command-Period)")
-            } else {
-                Button("Clear Queue") {
-                    model.requestClearBatchQueue()
-                }
-                .controlSize(.small)
-                .fixedSize()
-                .hoverDescription("Clear all queued episodes and return to empty two-folder intake")
-
-                Button {
-                    model.startBatchQueue()
-                } label: {
-                    Label("Start Batch", systemImage: "play.fill")
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.small)
-                .fixedSize()
-                .disabled(!model.dependencies.allRequiredReady || !model.batchJobs.contains(where: \.hasRequiredInputs))
-                .hoverDescription("Start processing queued episodes (Command-R)")
+            Button("Add External Subtitle Folder", systemImage: "captions.bubble") {
+                model.pickBatchSubtitleFolder(replaceExisting: false)
             }
+            .controlSize(.small)
+            .fixedSize()
+            .disabled(model.isRunning)
+            .hoverDescription("Choose an External Subtitle Folder, switch to External mode if needed, and pair subtitles (Control-Option-Command-O)")
+
+            Spacer(minLength: Space.xs)
         }
     }
 
-    private var batchSecondaryHeaderBar: some View {
+    private var batchTransportHeaderBar: some View {
         @Bindable var model = model
         return HStack(spacing: Space.sm) {
             if model.unverifiedBatchCount > 0 {
@@ -248,11 +305,21 @@ struct BatchQueueView: View {
                 .controlSize(.small)
                 .fixedSize()
                 .hoverDescription("Confirm all \(model.unverifiedBatchCount) remaining unverified pairs are matched correctly")
-            } else if !model.batchJobs.isEmpty {
+            } else if !model.batchJobs.isEmpty && model.batchJobs.contains(where: { $0.isComplete(for: model.batchSubtitleMode) }) {
                 Label("All Pairs Verified", systemImage: "checkmark.circle.fill")
                     .font(.caption.weight(.medium))
                     .foregroundStyle(Surfaces.statusSuccess)
-                    .hoverDescription("Every paired episode in this batch has been verified")
+                    .hoverDescription("Every complete episode pair in this batch has been verified")
+            }
+
+            if model.batchSubtitleMode == .external {
+                Label("External Subs", systemImage: "captions.bubble")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(Palette.accentText)
+                    .padding(.horizontal, Space.sm)
+                    .padding(.vertical, 2)
+                    .background(Palette.accent.opacity(0.14), in: Capsule())
+                    .hoverDescription("Auto Batch is pairing external .ass, .srt, and .ssa subtitle files")
             }
 
             Spacer(minLength: Space.sm)
@@ -263,8 +330,13 @@ struct BatchQueueView: View {
             .controlSize(.small)
             .fixedSize()
             .popover(isPresented: $showTrackRulesPopover, arrowEdge: .bottom) {
-                BatchTrackRulesPopover()
-                    .environment(model)
+                BatchTrackRulesPopover(
+                    srcAudioRule: $model.batchSrcAudioRule,
+                    dstAudioRule: $model.batchDstAudioRule,
+                    subRule: $model.batchSubRule,
+                    showSubtitleRule: model.batchSubtitleMode == .embedded,
+                    onApply: { model.applyBatchTrackRulesToAll() }
+                )
             }
             .hoverDescription("Configure batch-wide audio and subtitle track selection rules")
 
@@ -287,7 +359,42 @@ struct BatchQueueView: View {
             }
             .controlSize(.small)
             .fixedSize()
-            .hoverDescription("Presets, add row, retry flagged, and manual merge actions")
+            .hoverDescription("Presets, add empty row, retry flagged, and manual merge actions")
+
+            if model.isRunning {
+                Button(model.isPaused ? "Resume" : "Pause", systemImage: model.isPaused ? "play.fill" : "pause.fill") {
+                    model.togglePauseQueue()
+                }
+                .controlSize(.small)
+                .fixedSize()
+                .hoverDescription("Pause or resume after the current episode finishes (Option-Command-P)")
+
+                Button(model.isCancelling ? "Cancelling…" : "Cancel", role: .destructive) {
+                    model.cancelActiveJob()
+                }
+                .controlSize(.small)
+                .fixedSize()
+                .disabled(model.isCancelling)
+                .hoverDescription("Cancel the active episode and delete its temporary and partial files (Command-Period)")
+            } else {
+                Button("Clear Queue") {
+                    model.requestClearBatchQueue()
+                }
+                .controlSize(.small)
+                .fixedSize()
+                .hoverDescription("Clear all queued episodes and return to folder intake")
+
+                Button {
+                    model.startBatchQueue()
+                } label: {
+                    Label("Start Batch", systemImage: "play.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .fixedSize()
+                .disabled(!model.dependencies.allRequiredReady || !model.batchJobs.contains(where: \.hasPairedFiles))
+                .hoverDescription("Start processing queued episodes (Command-R)")
+            }
         }
     }
 
@@ -295,42 +402,59 @@ struct BatchQueueView: View {
 
     private var queueListSection: some View {
         @Bindable var model = model
+        let externalMode = model.batchSubtitleMode == .external
+
         return List(selection: $model.selectedBatchJobIDs) {
             ForEach(model.batchJobs) { job in
                 BatchJobRow(
                     job: job,
+                    isExternalMode: externalMode,
                     onToggleVerify: { model.toggleVerification(for: job) },
                     onReselectSource: { model.reselectBatchSource(for: job) },
                     onReselectTarget: { model.reselectBatchTarget(for: job) },
+                    onReselectSubtitle: { model.reselectBatchSubtitle(for: job) },
                     onRemoveSource: { model.removeBatchSource(for: job) },
                     onRemoveTarget: { model.removeBatchTarget(for: job) },
+                    onRemoveSubtitle: { model.removeBatchSubtitle(for: job) },
                     onRemoveRow: { model.removeBatchJob(job, undoManager: undoManager) }
                 )
                 .tag(job.id)
                 .contextMenu {
-                    if job.sourceURL != nil && job.targetURL != nil {
+                    if job.isComplete(for: model.batchSubtitleMode) {
                         Button(job.isVerified ? "Mark Pair Unverified" : "Verify Pair") {
                             model.toggleVerification(for: job)
                         }
                         Divider()
                     }
-                    Button(job.sourceURL == nil ? "Choose Source File…" : "Reselect Source File…") {
+                    Button(job.sourceURL == nil ? "Choose Source Media File…" : "Reselect Source Media File…") {
                         model.reselectBatchSource(for: job)
                     }
                     .disabled(job.status == .running)
-                    Button(job.targetURL == nil ? "Choose Target File…" : "Reselect Target File…") {
+                    Button(job.targetURL == nil ? "Choose Target Media File…" : "Reselect Target Media File…") {
                         model.reselectBatchTarget(for: job)
                     }
                     .disabled(job.status == .running)
+                    if externalMode || job.useExternalSubtitle {
+                        Button(job.externalSubtitleURL == nil ? "Choose External Subtitle…" : "Reselect External Subtitle…") {
+                            model.reselectBatchSubtitle(for: job)
+                        }
+                        .disabled(job.status == .running)
+                    }
                     if job.sourceURL != nil {
-                        Button("Remove Source File") {
+                        Button("Remove Source Media File") {
                             model.removeBatchSource(for: job)
                         }
                         .disabled(job.status == .running)
                     }
                     if job.targetURL != nil {
-                        Button("Remove Target File") {
+                        Button("Remove Target Media File") {
                             model.removeBatchTarget(for: job)
+                        }
+                        .disabled(job.status == .running)
+                    }
+                    if job.externalSubtitleURL != nil {
+                        Button("Remove External Subtitle") {
+                            model.removeBatchSubtitle(for: job)
                         }
                         .disabled(job.status == .running)
                     }
@@ -379,13 +503,14 @@ struct BatchQueueView: View {
     @ViewBuilder
     private var selectedEpisodeEditor: some View {
         if let job = selectedBatchJob {
+            let showExternalRow = model.batchSubtitleMode == .external || job.useExternalSubtitle
             ScrollView {
                 VStack(alignment: .leading, spacing: Space.lg) {
                     HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
                         Text("\(job.episodeBadge) · Pairing & Track Overrides")
                             .font(.headline)
 
-                        if job.sourceURL != nil && job.targetURL != nil {
+                        if job.isComplete(for: model.batchSubtitleMode) {
                             if job.isVerified {
                                 Button {
                                     model.toggleVerification(for: job)
@@ -411,7 +536,7 @@ struct BatchQueueView: View {
                                     model.markVerified(job)
                                 }
                                 .controlSize(.small)
-                                .hoverDescription("Confirm this Source → Target pairing is correct")
+                                .hoverDescription("Confirm this episode pairing is correct")
                             }
                         }
 
@@ -433,13 +558,13 @@ struct BatchQueueView: View {
                     // Manual file pairing editor
                     Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: Space.md, verticalSpacing: Space.sm) {
                         GridRow {
-                            Text("Source File").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
+                            Text("Source Media").foregroundStyle(.secondary).gridColumnAlignment(.trailing)
                             HStack(spacing: Space.sm) {
                                 Text(job.sourceURL?.lastPathComponent ?? "No match found")
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                                     .foregroundStyle(job.sourceURL == nil ? Surfaces.statusWarning : .primary)
-                                    .help(job.sourceURL?.path ?? "No matching Source file was found")
+                                    .help(job.sourceURL?.path ?? "No matching Source media file was found")
                                 Spacer()
                                 if job.sourceURL != nil {
                                     Button("Remove") {
@@ -447,25 +572,25 @@ struct BatchQueueView: View {
                                     }
                                     .controlSize(.small)
                                     .disabled(job.status == .running)
-                                    .hoverDescription("Clear the Source file from this row")
+                                    .hoverDescription("Clear the Source media file from this row")
                                 }
                                 Button(job.sourceURL == nil ? "Choose File…" : "Reselect…") {
                                     model.reselectBatchSource(for: job)
                                 }
                                 .controlSize(.small)
                                 .disabled(job.status == .running)
-                                .hoverDescription("Choose a Source file starting in the selected Source folder")
+                                .hoverDescription("Choose a Source file starting in the selected Source Media Folder")
                             }
                         }
 
                         GridRow {
-                            Text("Target File").foregroundStyle(.secondary)
+                            Text("Target Media").foregroundStyle(.secondary)
                             HStack(spacing: Space.sm) {
                                 Text(job.targetURL?.lastPathComponent ?? "No match found")
                                     .lineLimit(1)
                                     .truncationMode(.middle)
                                     .foregroundStyle(job.targetURL == nil ? Surfaces.statusWarning : .primary)
-                                    .help(job.targetURL?.path ?? "No matching Target file was found")
+                                    .help(job.targetURL?.path ?? "No matching Target media file was found")
                                 Spacer()
                                 if job.targetURL != nil {
                                     Button("Remove") {
@@ -473,14 +598,42 @@ struct BatchQueueView: View {
                                     }
                                     .controlSize(.small)
                                     .disabled(job.status == .running)
-                                    .hoverDescription("Clear the Target file from this row")
+                                    .hoverDescription("Clear the Target media file from this row")
                                 }
                                 Button(job.targetURL == nil ? "Choose File…" : "Reselect…") {
                                     model.reselectBatchTarget(for: job)
                                 }
                                 .controlSize(.small)
                                 .disabled(job.status == .running)
-                                .hoverDescription("Choose a Target file starting in the selected Target folder")
+                                .hoverDescription("Choose a Target file starting in the selected Target Media Folder")
+                            }
+                        }
+
+                        if showExternalRow {
+                            GridRow {
+                                Text("External Subtitle").foregroundStyle(.secondary)
+                                HStack(spacing: Space.sm) {
+                                    Text(job.externalSubtitleURL?.lastPathComponent ?? "No match found")
+                                        .lineLimit(1)
+                                        .truncationMode(.middle)
+                                        .foregroundStyle(job.externalSubtitleURL == nil ? Surfaces.statusWarning : .primary)
+                                        .help(job.externalSubtitleURL?.path ?? "No matching External Subtitle file was found")
+                                    Spacer()
+                                    if job.externalSubtitleURL != nil {
+                                        Button("Remove") {
+                                            model.removeBatchSubtitle(for: job)
+                                        }
+                                        .controlSize(.small)
+                                        .disabled(job.status == .running)
+                                        .hoverDescription("Remove the External Subtitle from this row")
+                                    }
+                                    Button(job.externalSubtitleURL == nil ? "Choose Subtitle…" : "Reselect…") {
+                                        model.reselectBatchSubtitle(for: job)
+                                    }
+                                    .controlSize(.small)
+                                    .disabled(job.status == .running)
+                                    .hoverDescription("Choose an External Subtitle starting in the selected Subtitle Folder")
+                                }
                             }
                         }
                     }
@@ -495,19 +648,11 @@ struct BatchQueueView: View {
                         job: job,
                         markAsCustomOverride: true,
                         onChooseExternalSub: {
-                            if let url = model.pickSingleFile(
-                                title: "Choose External Subtitle",
-                                allowedExtensions: Array(EpisodePairing.subtitleExtensions),
-                                initialDirectory: model.effectiveBatchSourceDirectory
-                            ) {
-                                job.externalSubtitleURL = url
-                                job.useExternalSubtitle = true
-                                job.hasCustomTrackOverrides = true
-                            }
+                            model.reselectBatchSubtitle(for: job)
+                            job.hasCustomTrackOverrides = true
                         },
                         onClearExternalSub: {
-                            job.externalSubtitleURL = nil
-                            job.useExternalSubtitle = false
+                            model.removeBatchSubtitle(for: job)
                             job.hasCustomTrackOverrides = true
                         },
                         onResetToBatchRule: {
@@ -564,8 +709,11 @@ private struct BatchIntakeFolderCard: View {
     let symbol: String
     let isReady: Bool
     let folderURL: URL?
-    let mediaCount: Int
-    let subtitleCount: Int
+    let itemCount: Int
+    let itemUnitSingular: String
+    let itemUnitPlural: String
+    let itemCountSymbol: String
+    let compactHeader: Bool
     @Binding var isTargeted: Bool
     let onChoose: () -> Void
     let onDrop: @MainActor ([URL]) -> Void
@@ -573,44 +721,31 @@ private struct BatchIntakeFolderCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
-            HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+            HStack(alignment: .firstTextBaseline, spacing: Space.xs) {
                 Label(title, systemImage: symbol)
-                    .font(.headline)
-                Spacer()
-                if isReady {
-                    Label("Ready", systemImage: "checkmark.circle.fill")
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(Surfaces.statusSuccess)
-                        .padding(.horizontal, Space.sm)
-                        .padding(.vertical, 2)
-                        .background(Surfaces.statusSuccess.opacity(0.14), in: Capsule())
+                    .font(compactHeader ? .callout.weight(.semibold) : .headline)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: Space.xs)
+                if isReady && !compactHeader {
+                    readyBadge
                 }
             }
 
             if isReady {
                 VStack(alignment: .leading, spacing: Space.xs) {
-                    Text(folderURL?.lastPathComponent ?? "Selected Media Files")
-                        .font(.title3.weight(.medium))
+                    Text(folderURL?.lastPathComponent ?? "Selected Files")
+                        .font(compactHeader ? .headline : .title3.weight(.medium))
                         .lineLimit(2)
                         .truncationMode(.middle)
                         .help(folderURL?.path ?? "")
 
-                    HStack(spacing: Space.md) {
-                        Label(
-                            "\(mediaCount) \(mediaCount == 1 ? "media file" : "media files")",
-                            systemImage: "film"
-                        )
-                        .foregroundStyle(mediaCount > 0 ? .secondary : Surfaces.statusWarning)
-
-                        if subtitleCount > 0 {
-                            Label(
-                                "\(subtitleCount) \(subtitleCount == 1 ? "subtitle" : "subtitles")",
-                                systemImage: "captions.bubble"
-                            )
-                            .foregroundStyle(.secondary)
-                        }
-                    }
+                    Label(
+                        "\(itemCount) \(itemCount == 1 ? itemUnitSingular : itemUnitPlural)",
+                        systemImage: itemCountSymbol
+                    )
                     .font(.callout)
+                    .foregroundStyle(itemCount > 0 ? .secondary : Surfaces.statusWarning)
 
                     if let path = folderURL?.deletingLastPathComponent().path {
                         Text(path)
@@ -628,7 +763,10 @@ private struct BatchIntakeFolderCard: View {
                         .controlSize(.small)
                     Button("Clear", action: onClear)
                         .controlSize(.small)
-                    Spacer()
+                    Spacer(minLength: Space.xs)
+                    if compactHeader {
+                        readyBadge
+                    }
                 }
             } else {
                 VStack(spacing: Space.sm) {
@@ -647,7 +785,7 @@ private struct BatchIntakeFolderCard: View {
                 .frame(maxWidth: .infinity, minHeight: 124)
             }
         }
-        .padding(Space.lg)
+        .padding(compactHeader ? Space.md : Space.lg)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             cardFill,
@@ -664,6 +802,16 @@ private struct BatchIntakeFolderCard: View {
         .onDrop(of: [.fileURL], isTargeted: $isTargeted) { providers in
             loadDroppedURLs(from: providers, completion: onDrop)
         }
+    }
+
+    private var readyBadge: some View {
+        Label("Ready", systemImage: "checkmark.circle.fill")
+            .font(.caption2.weight(.semibold))
+            .foregroundStyle(Surfaces.statusSuccess)
+            .padding(.horizontal, Space.xs)
+            .padding(.vertical, 2)
+            .background(Surfaces.statusSuccess.opacity(0.14), in: Capsule())
+            .fixedSize()
     }
 
     private var cardFill: Color {
@@ -715,15 +863,18 @@ private final class URLCollector {
 
 private struct BatchJobRow: View {
     let job: EpisodeJob
+    let isExternalMode: Bool
     let onToggleVerify: () -> Void
     let onReselectSource: () -> Void
     let onReselectTarget: () -> Void
+    let onReselectSubtitle: () -> Void
     let onRemoveSource: () -> Void
     let onRemoveTarget: () -> Void
+    let onRemoveSubtitle: () -> Void
     let onRemoveRow: () -> Void
 
     private var isIncompletePair: Bool {
-        job.sourceURL == nil || job.targetURL == nil
+        job.sourceURL == nil || job.targetURL == nil || (isExternalMode && job.externalSubtitleURL == nil)
     }
 
     var body: some View {
@@ -743,7 +894,11 @@ private struct BatchJobRow: View {
                             .foregroundStyle(.primary)
                             .help(src.path)
                     } else {
-                        missingFileSlot(label: "Choose File…", help: "Choose Source file from the selected Source folder", action: onReselectSource)
+                        missingFileSlot(
+                            label: "Choose File…",
+                            help: "Choose Source media file from the selected Source Media Folder",
+                            action: onReselectSource
+                        )
                     }
 
                     Image(systemName: "arrow.right")
@@ -758,20 +913,45 @@ private struct BatchJobRow: View {
                             .foregroundStyle(.primary)
                             .help(dst.path)
                     } else {
-                        missingFileSlot(label: "Choose File…", help: "Choose Target file from the selected Target folder", action: onReselectTarget)
+                        missingFileSlot(
+                            label: "Choose File…",
+                            help: "Choose Target media file from the selected Target Media Folder",
+                            action: onReselectTarget
+                        )
                     }
                 }
 
                 HStack(spacing: Space.md) {
-                    if let srcA = job.selectedSourceAudioTrack, let dstA = job.selectedTargetAudioTrack {
-                        Text("Audio: T\(srcA.id) (\(srcA.lang)) → T\(dstA.id) (\(dstA.lang))")
+                    if isExternalMode {
+                        if let ext = job.externalSubtitleURL {
+                            Label(ext.lastPathComponent, systemImage: "captions.bubble")
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .help(ext.path)
+                        } else {
+                            HStack(spacing: Space.xs) {
+                                Image(systemName: "captions.bubble")
+                                    .foregroundStyle(Surfaces.statusWarning)
+                                Text("No match found")
+                                    .foregroundStyle(Surfaces.statusWarning)
+                                Button("Choose File…", action: onReselectSubtitle)
+                                    .controlSize(.mini)
+                                    .disabled(job.status == .running)
+                                    .hoverDescription("Choose External Subtitle from the selected Subtitle Folder")
+                            }
+                        }
+                    } else {
+                        if let srcA = job.selectedSourceAudioTrack, let dstA = job.selectedTargetAudioTrack {
+                            Text("Audio: T\(srcA.id) (\(srcA.lang)) → T\(dstA.id) (\(dstA.lang))")
+                        }
+                        if job.useExternalSubtitle, let ext = job.externalSubtitleURL {
+                            Text("Sub: \(ext.lastPathComponent)")
+                        } else if !job.selectedEmbeddedSubtitles.isEmpty {
+                            let ids = job.selectedEmbeddedSubtitles.map { "T\($0.id)" }.joined(separator: ", ")
+                            Text("Sub: \(ids)")
+                        }
                     }
-                    if job.useExternalSubtitle, let ext = job.externalSubtitleURL {
-                        Text("Sub: \(ext.lastPathComponent)")
-                    } else if !job.selectedEmbeddedSubtitles.isEmpty {
-                        let ids = job.selectedEmbeddedSubtitles.map { "T\($0.id)" }.joined(separator: ", ")
-                        Text("Sub: \(ids)")
-                    }
+
                     if job.hasCustomTrackOverrides {
                         Text("Custom Override")
                             .foregroundStyle(Palette.accentText)
@@ -832,7 +1012,7 @@ private struct BatchJobRow: View {
             }
             .buttonStyle(.plain)
             .disabled(job.status == .running)
-            .hoverDescription("Remove this row from the batch list")
+            .hoverDescription("Remove this row from the Auto Batch list")
         }
         .padding(.vertical, Space.xs)
     }
@@ -852,13 +1032,20 @@ private struct BatchJobRow: View {
 
     private var rowActionMenu: some View {
         Menu {
-            Button(job.sourceURL == nil ? "Choose Source File…" : "Reselect Source File…", action: onReselectSource)
-            Button(job.targetURL == nil ? "Choose Target File…" : "Reselect Target File…", action: onReselectTarget)
+            Button(job.sourceURL == nil ? "Choose Source Media File…" : "Reselect Source Media File…", action: onReselectSource)
+            Button(job.targetURL == nil ? "Choose Target Media File…" : "Reselect Target Media File…", action: onReselectTarget)
+            if isExternalMode || job.useExternalSubtitle {
+                Button(job.externalSubtitleURL == nil ? "Choose External Subtitle…" : "Reselect External Subtitle…", action: onReselectSubtitle)
+            }
             Divider()
-            Button("Remove Source File", action: onRemoveSource)
+            Button("Remove Source Media File", action: onRemoveSource)
                 .disabled(job.sourceURL == nil)
-            Button("Remove Target File", action: onRemoveTarget)
+            Button("Remove Target Media File", action: onRemoveTarget)
                 .disabled(job.targetURL == nil)
+            if isExternalMode || job.externalSubtitleURL != nil {
+                Button("Remove External Subtitle", action: onRemoveSubtitle)
+                    .disabled(job.externalSubtitleURL == nil)
+            }
             Divider()
             Button("Remove Row", role: .destructive, action: onRemoveRow)
         } label: {
@@ -870,7 +1057,7 @@ private struct BatchJobRow: View {
         .menuIndicator(.hidden)
         .fixedSize()
         .disabled(job.status == .running)
-        .hoverDescription("Reselect or remove Source/Target files, or remove this row")
+        .hoverDescription("Reselect or remove Source, Target, or External Subtitle files, or remove this row")
     }
 
     @ViewBuilder
@@ -897,70 +1084,7 @@ private struct BatchJobRow: View {
                     .background(Surfaces.statusWarning.opacity(0.14), in: Capsule())
             }
             .buttonStyle(.plain)
-            .hoverDescription("Unverified pairing — click to confirm this Source → Target match")
-        }
-    }
-}
-
-private struct BatchTrackRulesPopover: View {
-    @Environment(AppModel.self) private var model
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        @Bindable var model = model
-        VStack(alignment: .leading, spacing: Space.lg) {
-            Text("Batch Track Rules")
-                .font(.headline)
-            Text("Choose how audio and subtitle tracks are matched across all episodes. Individual episodes can still override these rules.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-            ruleEditor(title: "Source Audio", rule: $model.batchSrcAudioRule)
-            Divider()
-            ruleEditor(title: "Target Audio", rule: $model.batchDstAudioRule)
-            Divider()
-            ruleEditor(title: "Source Subtitle", rule: $model.batchSubRule)
-
-            HStack {
-                Spacer()
-                Button("Apply Rules to All Episodes") {
-                    model.applyBatchTrackRulesToAll()
-                    dismiss()
-                }
-                .buttonStyle(.borderedProminent)
-            }
-        }
-        .padding(Space.lg)
-        .frame(width: 380)
-    }
-
-    private func ruleEditor(title: String, rule: Binding<BatchTrackRule>) -> some View {
-        VStack(alignment: .leading, spacing: Space.xs) {
-            Text(title).font(.callout.weight(.medium))
-            Picker("Rule", selection: rule.mode) {
-                ForEach(BatchTrackRule.MatchMode.allCases, id: \.self) { mode in
-                    Text(mode.displayName).tag(mode)
-                }
-            }
-            .labelsHidden()
-
-            switch rule.wrappedValue.mode {
-            case .firstOrDefault:
-                EmptyView()
-            case .trackPosition:
-                Stepper("Track #\(rule.wrappedValue.trackPosition)", value: rule.trackPosition, in: 1...16)
-                    .font(.callout)
-            case .streamID:
-                Stepper("Stream ID \(rule.wrappedValue.streamID)", value: rule.streamID, in: 0...32)
-                    .font(.callout)
-            case .languageAndTitle:
-                HStack(spacing: Space.sm) {
-                    TextField("Language (e.g. jpn, eng)", text: rule.languageFilter)
-                        .textFieldStyle(.roundedBorder)
-                    TextField("Title contains…", text: rule.titleContains)
-                        .textFieldStyle(.roundedBorder)
-                }
-            }
+            .hoverDescription("Unverified pairing — click to confirm this episode match")
         }
     }
 }

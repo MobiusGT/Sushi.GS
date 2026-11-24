@@ -241,4 +241,163 @@ struct EpisodePairingTests {
         let matchedSubs = subRule.resolveSubtitles(in: subTracks)
         #expect(matchedSubs.map(\.id) == [5])
     }
+
+    @Test("External Mode 3-Way Pairing: auto-verifies ONLY when all 3 sides match exact filename/stem; heuristic target or subtitle starts unverified")
+    func threeWayExternalSubtitleAutoVerification() {
+        let sources = [
+            URL(fileURLWithPath: "/src/Show - 01.mkv"),
+            URL(fileURLWithPath: "/src/Show - 02.mkv"),
+            URL(fileURLWithPath: "/src/[SubsPlease] Show - 03 (1080p).mkv"),
+            URL(fileURLWithPath: "/src/[SubsPlease] Show - OVA (1080p).mkv"),
+        ]
+        let targets = [
+            URL(fileURLWithPath: "/dst/Show - 01.mp4"),
+            URL(fileURLWithPath: "/dst/Show - 02.mp4"),
+            URL(fileURLWithPath: "/dst/Show.S01E03.1080p.BluRay.x265.mkv"),
+            URL(fileURLWithPath: "/dst/Show.OVA.1080p.BluRay.x265.mkv"),
+        ]
+        let subs = [
+            URL(fileURLWithPath: "/sub/Show - 01.ass"),
+            URL(fileURLWithPath: "/sub/[Fansub] Show S01E02 (1080p).srt"),
+            URL(fileURLWithPath: "/sub/[SubsPlease] Show - 03 (1080p).ass"),
+            URL(fileURLWithPath: "/sub/Show OVA BluRay.ssa"),
+        ]
+
+        let paired = EpisodePairing.pairFiles(
+            sources: sources,
+            targets: targets,
+            externalSubtitles: subs,
+            subtitleMode: .external
+        )
+        #expect(paired.count == 4)
+
+        // Ep 01: exact stem across Source, Target, AND Subtitle -> auto-verified!
+        let ep1 = paired.first { $0.sourceFile?.lastPathComponent == "Show - 01.mkv" }
+        #expect(ep1?.targetFile?.lastPathComponent == "Show - 01.mp4")
+        #expect(ep1?.externalSubtitleFile?.lastPathComponent == "Show - 01.ass")
+        #expect(ep1?.matchKind == .exactFilename)
+        #expect(ep1?.isVerified == true)
+
+        // Ep 02: exact media stems, but subtitle matched via Tier 2 regex -> unverified!
+        let ep2 = paired.first { $0.sourceFile?.lastPathComponent == "Show - 02.mkv" }
+        #expect(ep2?.targetFile?.lastPathComponent == "Show - 02.mp4")
+        #expect(ep2?.externalSubtitleFile?.lastPathComponent == "[Fansub] Show S01E02 (1080p).srt")
+        #expect(ep2?.matchKind == .episodeRegex)
+        #expect(ep2?.isVerified == false)
+
+        // Ep 03: exact subtitle stem with Source, but Target matched via Tier 2 regex -> unverified!
+        let ep3 = paired.first { $0.sourceFile?.lastPathComponent.contains("03") == true }
+        #expect(ep3?.targetFile?.lastPathComponent.contains("S01E03") == true)
+        #expect(ep3?.externalSubtitleFile?.lastPathComponent.contains("03") == true)
+        #expect(ep3?.matchKind == .episodeRegex)
+        #expect(ep3?.isVerified == false)
+
+        // OVA: Tier 3 conservative specials matching across all 3 sides -> unverified!
+        let ova = paired.first { $0.sourceFile?.lastPathComponent.contains("OVA") == true }
+        #expect(ova?.targetFile?.lastPathComponent.contains("OVA") == true)
+        #expect(ova?.externalSubtitleFile?.lastPathComponent == "Show OVA BluRay.ssa")
+        #expect(ova?.matchKind == .titleSimilarity)
+        #expect(ova?.isVerified == false)
+    }
+
+    @Test("External Mode Season Mismatch Rejection: differing explicit seasons NEVER pair subtitles with mismatched media")
+    func threeWayExternalSubtitleSeasonMismatchRejection() {
+        let sources = [
+            URL(fileURLWithPath: "/src/Show.S01E05.WEB.mkv"),
+        ]
+        let targets = [
+            URL(fileURLWithPath: "/dst/Show.S01E05.BluRay.mkv"),
+        ]
+        let subs = [
+            URL(fileURLWithPath: "/sub/Show.S02E05.ass"),
+        ]
+
+        let paired = EpisodePairing.pairFiles(
+            sources: sources,
+            targets: targets,
+            externalSubtitles: subs,
+            subtitleMode: .external
+        )
+        // Media pair (S01E05) must NOT attach S02E05.ass; S02E05.ass stays in its own unmatched row.
+        #expect(paired.count == 2)
+        let s1Row = paired.first { $0.sourceFile != nil }
+        #expect(s1Row?.targetFile != nil)
+        #expect(s1Row?.externalSubtitleFile == nil)
+        #expect(s1Row?.isVerified == false)
+        #expect(s1Row?.matchKind == .unmatched)
+
+        let s2SubRow = paired.first { $0.externalSubtitleFile?.lastPathComponent == "Show.S02E05.ass" }
+        #expect(s2SubRow?.sourceFile == nil)
+        #expect(s2SubRow?.targetFile == nil)
+        #expect(s2SubRow?.isVerified == false)
+        #expect(s2SubRow?.matchKind == .unmatched)
+    }
+
+    @Test("Partial 1-folder and 2-folder combinations pair populated sides and leave missing side(s) nil")
+    func partialFolderCombinations() {
+        // 1-folder: Source only
+        let sourceOnly = EpisodePairing.pairFiles(
+            sources: [
+                URL(fileURLWithPath: "/src/Show - 01.mkv"),
+                URL(fileURLWithPath: "/src/Show - 02.mkv"),
+            ],
+            targets: [],
+            externalSubtitles: [],
+            subtitleMode: .embedded
+        )
+        #expect(sourceOnly.count == 2)
+        #expect(sourceOnly.allSatisfy { $0.sourceFile != nil && $0.targetFile == nil && !$0.isVerified })
+
+        // 1-folder: External Subtitles only
+        let subsOnly = EpisodePairing.pairFiles(
+            sources: [],
+            targets: [],
+            externalSubtitles: [
+                URL(fileURLWithPath: "/sub/Show - 01.ass"),
+                URL(fileURLWithPath: "/sub/Show - 02.srt"),
+            ],
+            subtitleMode: .external
+        )
+        #expect(subsOnly.count == 2)
+        #expect(subsOnly.allSatisfy { $0.sourceFile == nil && $0.targetFile == nil && $0.externalSubtitleFile != nil && !$0.isVerified })
+
+        // 2-folder: Target + External Subtitles (Source missing)
+        let targetAndSubs = EpisodePairing.pairFiles(
+            sources: [],
+            targets: [
+                URL(fileURLWithPath: "/dst/Show.S01E01.BluRay.mkv"),
+                URL(fileURLWithPath: "/dst/Show.S01E02.BluRay.mkv"),
+            ],
+            externalSubtitles: [
+                URL(fileURLWithPath: "/sub/Show - 02.ass"),
+                URL(fileURLWithPath: "/sub/Show - 01.ass"),
+            ],
+            subtitleMode: .external
+        )
+        #expect(targetAndSubs.count == 2)
+        #expect(targetAndSubs[0].sourceFile == nil)
+        #expect(targetAndSubs[0].targetFile?.lastPathComponent == "Show.S01E01.BluRay.mkv")
+        #expect(targetAndSubs[0].externalSubtitleFile?.lastPathComponent == "Show - 01.ass")
+        #expect(targetAndSubs[0].isVerified == false)
+        #expect(targetAndSubs[1].sourceFile == nil)
+        #expect(targetAndSubs[1].targetFile?.lastPathComponent == "Show.S01E02.BluRay.mkv")
+        #expect(targetAndSubs[1].externalSubtitleFile?.lastPathComponent == "Show - 02.ass")
+
+        // 2-folder: Source + External Subtitles (Target missing)
+        let sourceAndSubs = EpisodePairing.pairFiles(
+            sources: [
+                URL(fileURLWithPath: "/src/Show - 01v2.mkv"),
+            ],
+            targets: [],
+            externalSubtitles: [
+                URL(fileURLWithPath: "/sub/Show - 001.ass"),
+            ],
+            subtitleMode: .external
+        )
+        #expect(sourceAndSubs.count == 1)
+        #expect(sourceAndSubs[0].sourceFile?.lastPathComponent == "Show - 01v2.mkv")
+        #expect(sourceAndSubs[0].targetFile == nil)
+        #expect(sourceAndSubs[0].externalSubtitleFile?.lastPathComponent == "Show - 001.ass")
+        #expect(sourceAndSubs[0].isVerified == false)
+    }
 }

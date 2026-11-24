@@ -23,7 +23,7 @@ struct ContentView: View {
                 .tag(destination)
             }
             .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 260)
+            .navigationSplitViewColumnWidth(min: 180, ideal: 204, max: 256)
         } detail: {
             detailContent
                 .navigationTitle("Gas Station Sushi")
@@ -43,18 +43,35 @@ struct ContentView: View {
                             }
                             .disabled(model.isRunning || !model.singleJob.hasAnyStateToClear)
                             .help("Clear files, status, metrics, warnings, and logs to start fresh (Shift-Command-K)")
-                        } else if model.sidebar == .batchQueue {
-                            Button("Add Source Folder", systemImage: "folder.badge.plus") {
+                        } else if model.sidebar == .autoBatch {
+                            Button("Add Source Media Folder", systemImage: "folder.badge.plus") {
                                 model.pickBatchSourceFolder(replaceExisting: !model.isBatchInQueueStage)
                             }
                             .disabled(model.isRunning)
-                            .help("Select a Source folder for Batch Queue (Option-Command-O)")
+                            .help("Add a Source Media Folder for Auto Batch (Option-Command-O)")
 
-                            Button("Add Target Folder", systemImage: "sparkles.tv") {
+                            Button("Add Target Media Folder", systemImage: "sparkles.tv") {
                                 model.pickBatchTargetFolder(replaceExisting: !model.isBatchInQueueStage)
                             }
                             .disabled(model.isRunning)
-                            .help("Select a Target folder for Batch Queue (Option-Shift-Command-O)")
+                            .help("Add a Target Media Folder for Auto Batch (Option-Shift-Command-O)")
+
+                            Button("Add External Subtitle Folder", systemImage: "captions.bubble") {
+                                model.pickBatchSubtitleFolder(replaceExisting: !model.isBatchInQueueStage)
+                            }
+                            .disabled(model.isRunning)
+                            .help("Add an External Subtitle Folder for Auto Batch (Control-Option-Command-O)")
+                        } else if model.sidebar == .manualBatch {
+                            Button("Choose Folder", systemImage: "folder") {
+                                model.chooseManualBrowserFolder()
+                            }
+                            .help("Choose a root folder for the Manual Batch File Browser")
+
+                            Button("Clear All", systemImage: "arrow.counterclockwise") {
+                                model.requestClearManualBatch()
+                            }
+                            .disabled(model.isRunning || model.manualColumns.isEmpty)
+                            .help("Clear all columns in Manual Batch")
                         }
                     }
 
@@ -84,7 +101,7 @@ struct ContentView: View {
         }
         .inspector(isPresented: $model.showInspector) {
             LogInspectorView()
-                .inspectorColumnWidth(min: 280, ideal: 340, max: 480)
+                .inspectorColumnWidth(min: 280, ideal: 320, max: 460)
                 .toolbar {
                     ToolbarSpacer(.flexible)
                     ToolbarItem {
@@ -95,7 +112,7 @@ struct ContentView: View {
                     }
                 }
         }
-        .frame(minWidth: 1020, minHeight: 620)
+        .frame(minWidth: 1020, minHeight: 640)
         .overlay {
             if GridOverlay.enabled {
                 GridOverlay()
@@ -109,8 +126,10 @@ struct ContentView: View {
         switch model.sidebar {
         case .singleEpisode:
             SingleEpisodeView()
-        case .batchQueue:
+        case .autoBatch:
             BatchQueueView()
+        case .manualBatch:
+            ManualBatchView()
         case .dependencies:
             DependenciesView()
         }
@@ -120,8 +139,12 @@ struct ContentView: View {
         switch model.sidebar {
         case .singleEpisode:
             model.singleJob.hasRequiredInputs && model.dependencies.allRequiredReady
-        case .batchQueue:
-            model.isBatchInQueueStage && model.batchJobs.contains(where: \.hasRequiredInputs) && model.dependencies.allRequiredReady
+        case .autoBatch:
+            model.isBatchInQueueStage
+                && model.batchJobs.contains(where: \.hasPairedFiles)
+                && model.dependencies.allRequiredReady
+        case .manualBatch:
+            model.manualJobs.contains(where: \.hasPairedFiles) && model.dependencies.allRequiredReady
         case .dependencies:
             !model.dependencies.isBusy && !model.dependencies.allRequiredReady
         }
@@ -130,7 +153,8 @@ struct ContentView: View {
     private var toolbarRunHelp: String {
         switch model.sidebar {
         case .singleEpisode: "Sync the current episode (Command-R)"
-        case .batchQueue: "Start the batch synchronization queue (Command-R)"
+        case .autoBatch: "Start the Auto Batch synchronization queue (Command-R)"
+        case .manualBatch: "Start the Manual Batch synchronization queue (Command-R)"
         case .dependencies: "Install required dependencies"
         }
     }
@@ -142,7 +166,7 @@ struct ContentView: View {
                 return ("!", Surfaces.statusWarning)
             }
             return nil
-        case .batchQueue:
+        case .autoBatch:
             let warned = model.batchJobs.filter { $0.status == .warned }.count
             if warned > 0 {
                 return ("\(warned)!", Surfaces.statusWarning)
@@ -150,8 +174,23 @@ struct ContentView: View {
             if model.isBatchInQueueStage && !model.batchJobs.isEmpty {
                 return ("\(model.batchJobs.count)", .secondary)
             }
-            if model.hasStagedSource != model.hasStagedTarget {
-                return ("1/2", Palette.accentText)
+            let progress = model.stagedFolderProgress
+            if progress.ready > 0 && progress.ready < progress.total {
+                return ("\(progress.ready)/\(progress.total)", Palette.accentText)
+            }
+            return nil
+        case .manualBatch:
+            let warned = model.manualJobs.filter { $0.status == .warned }.count
+            if warned > 0 {
+                return ("\(warned)!", Surfaces.statusWarning)
+            }
+            let total = model.manualColumns.rowCount
+            if total > 0 {
+                let complete = model.manualColumns.completeRowCount
+                if complete == total {
+                    return ("\(complete)", .secondary)
+                }
+                return ("\(complete)/\(total)", Surfaces.statusWarning)
             }
             return nil
         case .dependencies:

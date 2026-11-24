@@ -2,8 +2,8 @@
 # Reproducible GitHub-shareable DMG packager for Sushi.GS ("Gas Station Sushi").
 #
 # Usage:
-#   scripts/build_dmg.sh                    # builds dist/Sushi.GS-0.1.0-arm64.dmg (ad-hoc signed)
-#   APP_VERSION=0.1.0 scripts/build_dmg.sh  # explicit version
+#   scripts/build_dmg.sh                    # builds dist/Sushi.GS-0.1.1-arm64.dmg (ad-hoc signed)
+#   APP_VERSION=0.1.1 scripts/build_dmg.sh  # explicit version
 #
 # Optional Developer ID Signing & Notarization env vars:
 #   CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)"
@@ -19,8 +19,8 @@ repo=${here:h}
 app_name="Sushi.GS"
 exec_name="SushiGS"
 bundle_id="io.github.mobiusgt.sushigs"
-version="${APP_VERSION:-0.1.0}"
-build_num="${APP_BUILD:-1}"
+version="${APP_VERSION:-0.1.1}"
+build_num="${APP_BUILD:-2}"
 out_dir="${OUT_DIR:-$repo/dist}"
 scratch="${SCRATCH_PATH:-$HOME/Library/Developer/SushiGS/dmg-build}"
 

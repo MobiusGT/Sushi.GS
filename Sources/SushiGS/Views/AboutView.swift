@@ -19,7 +19,7 @@ struct AboutView: View {
             VStack(spacing: Space.xs) {
                 Text("Gas Station Sushi")
                     .font(.title2.weight(.semibold))
-                Text("Bundle: Sushi.GS · Version \(versionString)")
+                Text("Sushi.GS · Version \(versionString)")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -68,8 +68,8 @@ struct AboutView: View {
     }
 
     private var versionString: String {
-        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.0"
-        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "1"
+        let short = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.1.1"
+        let build = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "2"
         return "\(short) (\(build))"
     }
 

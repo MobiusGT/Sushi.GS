@@ -44,11 +44,27 @@ enum Snapshot {
                     SeedData.populate(model: model)
                 }
 
-                if only == nil || only?.contains("batchIntakeOneFolder") == true {
-                    SeedData.configureOneFolderBatchIntake(model: model)
-                    model.sidebar = .batchQueue
+                if only == nil || only?.contains("autoBatchIntakeEmbedded") == true {
+                    SeedData.configureEmbeddedOneFolderIntake(model: model)
+                    model.sidebar = .autoBatch
                     try? await Task.sleep(for: .seconds(0.8))
-                    capture(to: "\(dir)/batchIntakeOneFolder-\(mode).png")
+                    capture(to: "\(dir)/autoBatchIntakeEmbedded-\(mode).png")
+                    SeedData.populate(model: model)
+                }
+
+                if only == nil || only?.contains("autoBatchIntakeExternal") == true {
+                    SeedData.configureExternalThreeFolderIntake(model: model)
+                    model.sidebar = .autoBatch
+                    try? await Task.sleep(for: .seconds(0.8))
+                    capture(to: "\(dir)/autoBatchIntakeExternal-\(mode).png")
+                    SeedData.populate(model: model)
+                }
+
+                if only == nil || only?.contains("manualBatchEmbedded") == true {
+                    SeedData.populateManualBatch(model: model, subtitleMode: .embedded)
+                    model.sidebar = .manualBatch
+                    try? await Task.sleep(for: .seconds(0.8))
+                    capture(to: "\(dir)/manualBatchEmbedded-\(mode).png")
                     SeedData.populate(model: model)
                 }
             }

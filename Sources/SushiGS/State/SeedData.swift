@@ -96,7 +96,7 @@ enum SeedData {
         ]
         model.singleJob = single
 
-        // Seed Stage 2 batch queue spanning Exact-Name Auto-Verified, Regex Unverified, and Unmatched rows.
+        // Seed Auto Batch Stage 2 queue (External mode showing 3-folder pairing + exact, regex, unmatched rows)
         let batchFixtures: [(Int, JobStatus, PairMatchKind, Bool, Double?, [SyncWarning], String?)] = [
             (1, .succeeded, .exactFilename, true, 0.842, [], nil),
             (2, .warned, .episodeRegex, false, 1.428, single.warnings, nil),
@@ -113,12 +113,17 @@ enum SeedData {
             let tURL = matchKind == .exactFilename
                 ? URL(fileURLWithPath: "/Media/Target/Sample Series - \(epStr).mp4")
                 : URL(fileURLWithPath: "/Media/Target/Sample.Series.S01E\(epStr).1080p.BluRay.x265.mkv")
+            let subURL = matchKind == .exactFilename
+                ? URL(fileURLWithPath: "/Media/Subtitles/Sample Series - \(epStr).ass")
+                : URL(fileURLWithPath: "/Media/Subtitles/Sample_Series_S01E\(epStr)_EN.ass")
             let job = EpisodeJob(
                 episodeBadge: "S01E\(epStr)",
                 matchKind: matchKind,
                 isVerified: verified,
                 sourceURL: sURL,
                 targetURL: tURL,
+                externalSubtitleURL: subURL,
+                useExternalSubtitle: true,
                 selectedSourceAudioID: 1,
                 selectedTargetAudioID: 2,
                 selectedSubtitleIDs: [3]
@@ -146,25 +151,141 @@ enum SeedData {
             isVerified: false,
             sourceURL: URL(fileURLWithPath: "/Media/Source/Sample_Series_S02E01_WEB_1080p.mkv"),
             targetURL: nil,
+            externalSubtitleURL: nil,
+            useExternalSubtitle: true,
             selectedSourceAudioID: 1,
             selectedSubtitleIDs: [3]
         )
         unmatchedJob.sourceProbe = srcProbe
         jobs.append(unmatchedJob)
 
+        model.batchSubtitleMode = .external
         model.batchSourceFolder = URL(fileURLWithPath: "/Media/Source")
         model.batchTargetFolder = URL(fileURLWithPath: "/Media/Target")
+        model.batchSubtitleFolder = URL(fileURLWithPath: "/Media/Subtitles")
         model.stagedSourceMedia = jobs.compactMap(\.sourceURL)
         model.stagedTargetMedia = jobs.compactMap(\.targetURL)
+        model.stagedExternalSubtitles = jobs.compactMap(\.externalSubtitleURL)
         model.batchJobs = jobs
         model.isBatchInQueueStage = true
         model.selectedBatchJobIDs = [jobs[1].id]
         model.globalLogs = single.logs
+
+        // Seed Manual Batch workspace (File Browser + External 4-column populated state)
+        populateManualBatch(model: model, subtitleMode: .external, srcProbe: srcProbe, dstProbe: dstProbe, sampleLogs: single.logs, sampleWarnings: single.warnings)
     }
 
-    /// Configures a deterministic Stage 1 intake state where ONLY the Source folder is set,
-    /// verifying that Batch Mode waits cleanly for Target before transitioning.
-    static func configureOneFolderBatchIntake(model: AppModel) {
+    static func populateManualBatch(
+        model: AppModel,
+        subtitleMode: BatchSubtitleMode,
+        srcProbe: MediaProbeResult? = nil,
+        dstProbe: MediaProbeResult? = nil,
+        sampleLogs: [LogEntry] = [],
+        sampleWarnings: [SyncWarning] = []
+    ) {
+        let root = URL(fileURLWithPath: "/Media/Sample_Series")
+        let srcDir = URL(fileURLWithPath: "/Media/Sample_Series/WEB_Source")
+        let subDir = URL(fileURLWithPath: "/Media/Sample_Series/Subtitles_ASS")
+        let dstDir = URL(fileURLWithPath: "/Media/Sample_Series/BluRay_Target")
+
+        model.isSeededSyntheticBrowser = true
+        model.manualBrowserRootURL = root
+        model.manualBrowserFilter = .all
+        model.manualBrowserSearch = ""
+        model.manualBrowserExpandedPaths = [srcDir.path, subDir.path]
+        model.manualBrowserSelectedPaths = [srcDir.appendingPathComponent("Episode_03_WEB.mkv").path]
+        model.manualBrowserDirectoryCache = [
+            root.path: [
+                FileBrowserEntry(url: dstDir, isDirectory: true),
+                FileBrowserEntry(url: subDir, isDirectory: true),
+                FileBrowserEntry(url: srcDir, isDirectory: true),
+                FileBrowserEntry(url: root.appendingPathComponent("Bonus_OVA_WEB.mkv"), isDirectory: false),
+            ],
+            srcDir.path: [
+                FileBrowserEntry(url: srcDir.appendingPathComponent("Episode_01_WEB.mkv"), isDirectory: false),
+                FileBrowserEntry(url: srcDir.appendingPathComponent("Episode_02_WEB.mkv"), isDirectory: false),
+                FileBrowserEntry(url: srcDir.appendingPathComponent("Episode_03_WEB.mkv"), isDirectory: false),
+                FileBrowserEntry(url: srcDir.appendingPathComponent("Episode_04_WEB.mkv"), isDirectory: false),
+                FileBrowserEntry(url: srcDir.appendingPathComponent("Episode_05_WEB.mkv"), isDirectory: false),
+            ],
+            subDir.path: [
+                FileBrowserEntry(url: subDir.appendingPathComponent("Ep01_EN.ass"), isDirectory: false),
+                FileBrowserEntry(url: subDir.appendingPathComponent("Ep02_EN.ass"), isDirectory: false),
+                FileBrowserEntry(url: subDir.appendingPathComponent("Ep03_EN.ass"), isDirectory: false),
+                FileBrowserEntry(url: subDir.appendingPathComponent("Ep04_EN.ass"), isDirectory: false),
+            ],
+            dstDir.path: [
+                FileBrowserEntry(url: dstDir.appendingPathComponent("Sample.BD.01.1080p.FLAC.mkv"), isDirectory: false),
+                FileBrowserEntry(url: dstDir.appendingPathComponent("Sample.BD.02.1080p.FLAC.mkv"), isDirectory: false),
+                FileBrowserEntry(url: dstDir.appendingPathComponent("Sample.BD.03.1080p.FLAC.mkv"), isDirectory: false),
+                FileBrowserEntry(url: dstDir.appendingPathComponent("Sample.BD.04.1080p.FLAC.mkv"), isDirectory: false),
+                FileBrowserEntry(url: dstDir.appendingPathComponent("Sample.BD.05.1080p.FLAC.mkv"), isDirectory: false),
+            ],
+        ]
+
+        var columns = ManualBatchColumns(subtitleMode: subtitleMode)
+        columns.sourceVideos = [
+            ManualBatchCell(url: srcDir.appendingPathComponent("Episode_01_WEB.mkv")),
+            ManualBatchCell(url: srcDir.appendingPathComponent("Episode_02_WEB.mkv")),
+            ManualBatchCell(url: srcDir.appendingPathComponent("Episode_03_WEB.mkv")),
+            ManualBatchCell(url: srcDir.appendingPathComponent("Episode_04_WEB.mkv")),
+            ManualBatchCell(url: srcDir.appendingPathComponent("Episode_05_WEB.mkv")),
+        ]
+        columns.sourceSubtitles = [
+            ManualBatchCell(url: subDir.appendingPathComponent("Ep01_EN.ass")),
+            ManualBatchCell(url: subDir.appendingPathComponent("Ep02_EN.ass")),
+            ManualBatchCell(url: subDir.appendingPathComponent("Ep03_EN.ass")),
+            ManualBatchCell(url: nil), // Explicit blank alignment slot on row #4
+            ManualBatchCell(url: subDir.appendingPathComponent("Ep04_EN.ass")),
+        ]
+        columns.targetVideos = [
+            ManualBatchCell(url: dstDir.appendingPathComponent("Sample.BD.01.1080p.FLAC.mkv")),
+            ManualBatchCell(url: dstDir.appendingPathComponent("Sample.BD.02.1080p.FLAC.mkv")),
+            ManualBatchCell(url: dstDir.appendingPathComponent("Sample.BD.03.1080p.FLAC.mkv")),
+            ManualBatchCell(url: dstDir.appendingPathComponent("Sample.BD.04.1080p.FLAC.mkv")),
+        ] // Intentionally 4 items to demonstrate visible empty-slot cell on row #5
+
+        model.manualColumns = columns
+        model.manualJobs = []
+        model.syncManualJobs()
+
+        let effectiveSrcProbe = srcProbe ?? model.singleJob.sourceProbe
+        let effectiveDstProbe = dstProbe ?? model.singleJob.targetProbe
+        let effectiveLogs = sampleLogs.isEmpty ? model.singleJob.logs : sampleLogs
+        let effectiveWarnings = sampleWarnings.isEmpty ? model.singleJob.warnings : sampleWarnings
+
+        for (idx, job) in model.manualJobs.enumerated() {
+            job.sourceProbe = effectiveSrcProbe
+            job.targetProbe = effectiveDstProbe
+            job.selectedSourceAudioID = 1
+            job.selectedTargetAudioID = 2
+            job.selectedSubtitleIDs = [3]
+            job.logs = effectiveLogs
+            if idx == 0 {
+                job.status = .succeeded
+                job.progress = 1.0
+                job.syncedFiles = ["\(job.targetURL?.path ?? "/Media/Ep01").sushi.ass"]
+                job.mergedFilepath = "/Media/Sample_Series/Merged Files/Sample.BD.01.mkv"
+            } else if idx == 1 {
+                job.status = .warned
+                job.progress = 1.0
+                job.warnings = effectiveWarnings
+                job.syncedFiles = ["\(job.targetURL?.path ?? "/Media/Ep02").sushi.ass"]
+            } else if idx == 2 {
+                job.status = .pending
+            }
+        }
+        model.selectedManualRowIndex = 1
+        model.selectedManualColumn = .sourceVideo
+        if let secondCell = columns.sourceVideos.dropFirst().first {
+            model.selectedManualCellIDs = [secondCell.id]
+        }
+        model.syncMenuState()
+    }
+
+    /// Configures a deterministic Stage 1 Embedded intake state where ONLY Source Media Folder is set.
+    static func configureEmbeddedOneFolderIntake(model: AppModel) {
+        model.batchSubtitleMode = .embedded
         model.batchJobs = []
         model.selectedBatchJobIDs = []
         model.isBatchInQueueStage = false
@@ -172,8 +293,29 @@ enum SeedData {
         model.stagedSourceMedia = (1...12).map {
             URL(fileURLWithPath: String(format: "/Media/Source/Sample Series Season 1/Sample_Series_%02d_WEB_1080p.mkv", $0))
         }
-        model.stagedSourceSubtitles = []
         model.batchTargetFolder = nil
         model.stagedTargetMedia = []
+        model.batchSubtitleFolder = nil
+        model.stagedExternalSubtitles = []
+        model.syncMenuState()
+    }
+
+    /// Configures a deterministic Stage 1 External intake state showing all 3 drop boxes (Source + Target ready, waiting for Subtitle Folder).
+    static func configureExternalThreeFolderIntake(model: AppModel) {
+        model.batchSubtitleMode = .external
+        model.batchJobs = []
+        model.selectedBatchJobIDs = []
+        model.isBatchInQueueStage = false
+        model.batchSourceFolder = URL(fileURLWithPath: "/Media/Source/Sample Series Season 1")
+        model.stagedSourceMedia = (1...12).map {
+            URL(fileURLWithPath: String(format: "/Media/Source/Sample Series Season 1/Sample_Series_%02d_WEB_1080p.mkv", $0))
+        }
+        model.batchTargetFolder = URL(fileURLWithPath: "/Media/Target/Sample Series BluRay")
+        model.stagedTargetMedia = (1...12).map {
+            URL(fileURLWithPath: String(format: "/Media/Target/Sample Series BluRay/Sample.Series.S01E%02d.BluRay.mkv", $0))
+        }
+        model.batchSubtitleFolder = nil
+        model.stagedExternalSubtitles = []
+        model.syncMenuState()
     }
 }

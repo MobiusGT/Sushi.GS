@@ -35,7 +35,22 @@ public struct EpisodeKey: Hashable, Comparable, Sendable {
     }
 }
 
-/// How a Source -> Target episode pair was matched.
+/// Subtitle intake mode shared by Auto Batch and Manual Batch workspaces.
+public enum BatchSubtitleMode: String, Codable, CaseIterable, Hashable, Sendable, Identifiable {
+    case embedded
+    case external
+
+    public var id: String { rawValue }
+
+    public var displayName: String {
+        switch self {
+        case .embedded: "Embedded"
+        case .external: "External"
+        }
+    }
+}
+
+/// How a Source -> Target (and optional External Subtitle) episode pair was matched.
 public enum PairMatchKind: String, Codable, Hashable, Sendable {
     /// Tier 1: Exact filename or exact filename stem ignoring container extension (auto-verified).
     case exactFilename
@@ -43,8 +58,21 @@ public enum PairMatchKind: String, Codable, Hashable, Sendable {
     case episodeRegex
     /// Tier 3: Conservative normalized-title similarity fallback for non-numbered specials (starts unverified).
     case titleSimilarity
-    /// Unmatched entry ("No match found" on the missing side; starts unverified).
+    /// Unmatched entry ("No match found" on one or more required sides; starts unverified).
     case unmatched
+
+    fileprivate var tierRank: Int {
+        switch self {
+        case .exactFilename: 0
+        case .episodeRegex: 1
+        case .titleSimilarity: 2
+        case .unmatched: 3
+        }
+    }
+
+    static func combined(_ lhs: PairMatchKind, _ rhs: PairMatchKind) -> PairMatchKind {
+        lhs.tierRank >= rhs.tierRank ? lhs : rhs
+    }
 }
 
 public struct PairedEpisodeDraft: Identifiable, Hashable, Sendable {
@@ -54,6 +82,7 @@ public struct PairedEpisodeDraft: Identifiable, Hashable, Sendable {
     public var targetFile: URL?
     public var externalSubtitleFile: URL?
     public var matchKind: PairMatchKind
+    public var subtitleMatchKind: PairMatchKind?
     public var isVerified: Bool
 
     /// True for Tier 1 exact-name or Tier 2 episode-number matches.
@@ -68,6 +97,7 @@ public struct PairedEpisodeDraft: Identifiable, Hashable, Sendable {
         targetFile: URL? = nil,
         externalSubtitleFile: URL? = nil,
         matchKind: PairMatchKind = .episodeRegex,
+        subtitleMatchKind: PairMatchKind? = nil,
         isVerified: Bool? = nil
     ) {
         self.id = id
@@ -76,6 +106,7 @@ public struct PairedEpisodeDraft: Identifiable, Hashable, Sendable {
         self.targetFile = targetFile
         self.externalSubtitleFile = externalSubtitleFile
         self.matchKind = matchKind
+        self.subtitleMatchKind = subtitleMatchKind
         self.isVerified = isVerified ?? (matchKind == .exactFilename)
     }
 }
@@ -301,10 +332,38 @@ public enum EpisodePairing {
         }
     }
 
+    private struct MutablePairedRow {
+        var source: FileMetadata?
+        var target: FileMetadata?
+        var subtitle: FileMetadata?
+        var episodeKey: EpisodeKey?
+        var mediaMatchKind: PairMatchKind
+        var subtitleMatchKind: PairMatchKind?
+
+        var season: Int? {
+            episodeKey?.season ?? source?.season ?? target?.season ?? subtitle?.season
+        }
+
+        var titleTokens: Set<String> {
+            var merged: Set<String> = []
+            if let src = source { merged.formUnion(src.titleTokens) }
+            if let dst = target { merged.formUnion(dst.titleTokens) }
+            return merged
+        }
+
+        var specialCats: Set<String> {
+            var merged: Set<String> = []
+            if let src = source { merged.formUnion(src.specialCats) }
+            if let dst = target { merged.formUnion(dst.specialCats) }
+            return merged
+        }
+    }
+
     public static func pairFiles(
         sources: [URL],
         targets: [URL],
-        externalSubtitles: [URL] = []
+        externalSubtitles: [URL] = [],
+        subtitleMode: BatchSubtitleMode = .embedded
     ) -> [PairedEpisodeDraft] {
         let sortedSources = sources.sorted {
             $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
@@ -321,53 +380,25 @@ public enum EpisodePairing {
         let subMeta = sortedSubs.map(FileMetadata.init(url:))
 
         var usedTargets: Set<URL> = []
-        var usedSubs: Set<URL> = []
-        var drafts: [PairedEpisodeDraft] = []
+        var rows: [MutablePairedRow] = []
 
-        func claimSub(for src: FileMetadata) -> URL? {
-            if let exact = subMeta.first(where: { !usedSubs.contains($0.url) && $0.stemLower == src.stemLower }) {
-                usedSubs.insert(exact.url)
-                return exact.url
-            }
-            if let srcKey = src.episodeKey {
-                // Exact season + episode + specialTag subtitle match first
-                if let exactKey = subMeta.first(where: {
-                    !usedSubs.contains($0.url)
-                        && $0.episodeKey == srcKey
-                        && !seasonsConflict(src.season, $0.season)
-                }) {
-                    usedSubs.insert(exactKey.url)
-                    return exactKey.url
-                }
-                // Episode match with non-conflicting season
-                if let epMatch = subMeta.first(where: {
-                    !usedSubs.contains($0.url)
-                        && $0.episodeKey?.episode == srcKey.episode
-                        && $0.episodeKey?.specialTag == srcKey.specialTag
-                        && !seasonsConflict(src.season, $0.season)
-                }) {
-                    usedSubs.insert(epMatch.url)
-                    return epMatch.url
-                }
-            }
-            return nil
-        }
-
-        // MARK: Tier 1 — Exact filename or exact filename stem ignoring container extension (Auto-Verified)
+        // MARK: Media Step — Tier 1: Exact filename or stem ignoring container extension
         var afterTier1: [FileMetadata] = []
         for src in sourceMeta {
             if let dst = targetMeta.first(where: {
-                !usedTargets.contains($0.url) && isExactFilenameMatch(source: src.url, target: $0.url)
+                !usedTargets.contains($0.url)
+                    && !seasonsConflict(src.season, $0.season)
+                    && isExactFilenameMatch(source: src.url, target: $0.url)
             }) {
                 usedTargets.insert(dst.url)
-                drafts.append(
-                    PairedEpisodeDraft(
+                rows.append(
+                    MutablePairedRow(
+                        source: src,
+                        target: dst,
+                        subtitle: nil,
                         episodeKey: src.episodeKey ?? dst.episodeKey,
-                        sourceFile: src.url,
-                        targetFile: dst.url,
-                        externalSubtitleFile: claimSub(for: src),
-                        matchKind: .exactFilename,
-                        isVerified: true
+                        mediaMatchKind: .exactFilename,
+                        subtitleMatchKind: nil
                     )
                 )
             } else {
@@ -375,7 +406,7 @@ public enum EpisodePairing {
             }
         }
 
-        // MARK: Tier 2a — Both sides have explicit matching season + normalized episode number (Unverified)
+        // MARK: Media Step — Tier 2a: Explicit matching season + normalized episode number
         var afterTier2a: [FileMetadata] = []
         for src in afterTier1 {
             guard let srcKey = src.episodeKey, let srcSeason = src.season else {
@@ -390,16 +421,16 @@ public enum EpisodePairing {
                     && srcKey.episode == dstKey.episode
                     && srcKey.specialTag == dstKey.specialTag
             }
-            if let best = bestByTitleSimilarity(for: src, among: candidates) {
+            if let best = bestByTitleSimilarity(for: src.titleTokens, among: candidates) {
                 usedTargets.insert(best.url)
-                drafts.append(
-                    PairedEpisodeDraft(
+                rows.append(
+                    MutablePairedRow(
+                        source: src,
+                        target: best,
+                        subtitle: nil,
                         episodeKey: srcKey,
-                        sourceFile: src.url,
-                        targetFile: best.url,
-                        externalSubtitleFile: claimSub(for: src),
-                        matchKind: .episodeRegex,
-                        isVerified: false
+                        mediaMatchKind: .episodeRegex,
+                        subtitleMatchKind: nil
                     )
                 )
             } else {
@@ -407,8 +438,7 @@ public enum EpisodePairing {
             }
         }
 
-        // MARK: Tier 2b — Normalized episode number matching where at most one side specifies a season
-        // Strictly enforces seasonsConflict(src.season, dst.season) == false.
+        // MARK: Media Step — Tier 2b: Normalized episode number with non-conflicting season
         var afterTier2b: [FileMetadata] = []
         for src in afterTier2a {
             guard let srcKey = src.episodeKey else {
@@ -422,21 +452,21 @@ public enum EpisodePairing {
                 return srcKey.episode == dstKey.episode
                     && srcKey.specialTag == dstKey.specialTag
             }
-            if let best = bestByTitleSimilarity(for: src, among: candidates) {
+            if let best = bestByTitleSimilarity(for: src.titleTokens, among: candidates) {
                 usedTargets.insert(best.url)
                 let mergedKey = EpisodeKey(
                     season: src.season ?? best.season,
                     episode: srcKey.episode,
                     specialTag: srcKey.specialTag
                 )
-                drafts.append(
-                    PairedEpisodeDraft(
+                rows.append(
+                    MutablePairedRow(
+                        source: src,
+                        target: best,
+                        subtitle: nil,
                         episodeKey: mergedKey,
-                        sourceFile: src.url,
-                        targetFile: best.url,
-                        externalSubtitleFile: claimSub(for: src),
-                        matchKind: .episodeRegex,
-                        isVerified: false
+                        mediaMatchKind: .episodeRegex,
+                        subtitleMatchKind: nil
                     )
                 )
             } else {
@@ -444,8 +474,7 @@ public enum EpisodePairing {
             }
         }
 
-        // MARK: Tier 3 — Conservative normalized-title similarity fallback for non-numbered specials
-        // Never overrides differing episode numbers or differing explicit seasons.
+        // MARK: Media Step — Tier 3: Conservative title similarity fallback for non-numbered specials
         var unmatchedSources: [FileMetadata] = []
         for src in afterTier2b {
             guard src.episodeKey == nil else {
@@ -456,28 +485,22 @@ public enum EpisodePairing {
                 guard !usedTargets.contains(dst.url),
                       dst.episodeKey == nil,
                       !seasonsConflict(src.season, dst.season) else { return false }
-                // Reject conflicting special types (e.g. NCOP vs NCED, OVA vs Movie)
                 if !src.specialCats.isEmpty && !dst.specialCats.isEmpty && src.specialCats.isDisjoint(with: dst.specialCats) {
                     return false
                 }
                 return titleSimilarity(src.titleTokens, dst.titleTokens) >= 0.60
             }
 
-            if let best = candidates.max(by: {
-                let s1 = titleSimilarity(src.titleTokens, $0.titleTokens)
-                let s2 = titleSimilarity(src.titleTokens, $1.titleTokens)
-                if s1 != s2 { return s1 < s2 }
-                return $0.url.lastPathComponent.localizedStandardCompare($1.url.lastPathComponent) == .orderedDescending
-            }) {
+            if let best = bestByTitleSimilarity(for: src.titleTokens, among: candidates) {
                 usedTargets.insert(best.url)
-                drafts.append(
-                    PairedEpisodeDraft(
+                rows.append(
+                    MutablePairedRow(
+                        source: src,
+                        target: best,
+                        subtitle: nil,
                         episodeKey: nil,
-                        sourceFile: src.url,
-                        targetFile: best.url,
-                        externalSubtitleFile: claimSub(for: src),
-                        matchKind: .titleSimilarity,
-                        isVerified: false
+                        mediaMatchKind: .titleSimilarity,
+                        subtitleMatchKind: nil
                     )
                 )
             } else {
@@ -485,30 +508,177 @@ public enum EpisodePairing {
             }
         }
 
-        // MARK: Explicit Unmatched ("No match found") — Never force bad positional pairings
+        // Unmatched single-sided media rows ("No match found" on missing side)
         for src in unmatchedSources {
-            drafts.append(
-                PairedEpisodeDraft(
+            rows.append(
+                MutablePairedRow(
+                    source: src,
+                    target: nil,
+                    subtitle: nil,
                     episodeKey: src.episodeKey,
-                    sourceFile: src.url,
-                    targetFile: nil,
-                    externalSubtitleFile: claimSub(for: src),
-                    matchKind: .unmatched,
-                    isVerified: false
+                    mediaMatchKind: .unmatched,
+                    subtitleMatchKind: nil
                 )
             )
         }
 
         for dst in targetMeta where !usedTargets.contains(dst.url) {
-            drafts.append(
-                PairedEpisodeDraft(
+            rows.append(
+                MutablePairedRow(
+                    source: nil,
+                    target: dst,
+                    subtitle: nil,
                     episodeKey: dst.episodeKey,
-                    sourceFile: nil,
-                    targetFile: dst.url,
-                    externalSubtitleFile: nil,
-                    matchKind: .unmatched,
-                    isVerified: false
+                    mediaMatchKind: .unmatched,
+                    subtitleMatchKind: nil
                 )
+            )
+        }
+
+        // MARK: Unified Multi-Tier External Subtitle Pairing
+        // Runs the exact same strict-season-safe Tier 1 -> Tier 2a -> Tier 2b -> Tier 3 cascade
+        // across all rows (including partial 1-sided Source-only or Target-only rows).
+        if !subMeta.isEmpty {
+            var usedSubs: Set<URL> = []
+
+            // Subtitle Tier 1: Exact filename or exact stem ignoring extension
+            for idx in rows.indices where rows[idx].subtitle == nil {
+                let row = rows[idx]
+                let exactCandidate = subMeta.first { sub in
+                    guard !usedSubs.contains(sub.url),
+                          !seasonsConflict(row.season, sub.season) else { return false }
+                    if let src = row.source, isExactFilenameMatch(source: src.url, target: sub.url) {
+                        return true
+                    }
+                    if let dst = row.target, isExactFilenameMatch(source: dst.url, target: sub.url) {
+                        return true
+                    }
+                    return false
+                }
+                if let sub = exactCandidate {
+                    usedSubs.insert(sub.url)
+                    rows[idx].subtitle = sub
+                    rows[idx].subtitleMatchKind = .exactFilename
+                    if rows[idx].episodeKey == nil {
+                        rows[idx].episodeKey = sub.episodeKey
+                    }
+                }
+            }
+
+            // Subtitle Tier 2a: Explicit matching season + normalized episode number
+            for idx in rows.indices where rows[idx].subtitle == nil {
+                let row = rows[idx]
+                guard let rowKey = row.episodeKey, let rowSeason = row.season else { continue }
+                let candidates = subMeta.filter { sub in
+                    guard !usedSubs.contains(sub.url),
+                          let subKey = sub.episodeKey,
+                          let subSeason = sub.season else { return false }
+                    return rowSeason == subSeason
+                        && rowKey.episode == subKey.episode
+                        && rowKey.specialTag == subKey.specialTag
+                }
+                if let best = bestByTitleSimilarity(for: row.titleTokens, among: candidates) {
+                    usedSubs.insert(best.url)
+                    rows[idx].subtitle = best
+                    rows[idx].subtitleMatchKind = .episodeRegex
+                }
+            }
+
+            // Subtitle Tier 2b: Normalized episode number with non-conflicting season
+            for idx in rows.indices where rows[idx].subtitle == nil {
+                let row = rows[idx]
+                guard let rowKey = row.episodeKey else { continue }
+                let candidates = subMeta.filter { sub in
+                    guard !usedSubs.contains(sub.url),
+                          let subKey = sub.episodeKey else { return false }
+                    guard !seasonsConflict(row.season, sub.season) else { return false }
+                    return rowKey.episode == subKey.episode
+                        && rowKey.specialTag == subKey.specialTag
+                }
+                if let best = bestByTitleSimilarity(for: row.titleTokens, among: candidates) {
+                    usedSubs.insert(best.url)
+                    rows[idx].subtitle = best
+                    rows[idx].subtitleMatchKind = .episodeRegex
+                    if rowKey.season == nil, let subSeason = best.season {
+                        rows[idx].episodeKey = EpisodeKey(
+                            season: subSeason,
+                            episode: rowKey.episode,
+                            specialTag: rowKey.specialTag
+                        )
+                    }
+                }
+            }
+
+            // Subtitle Tier 3: Conservative normalized-title similarity fallback for non-numbered specials
+            for idx in rows.indices where rows[idx].subtitle == nil {
+                let row = rows[idx]
+                guard row.episodeKey == nil else { continue }
+                let rowTokens = row.titleTokens
+                let rowCats = row.specialCats
+                let candidates = subMeta.filter { sub in
+                    guard !usedSubs.contains(sub.url),
+                          sub.episodeKey == nil,
+                          !seasonsConflict(row.season, sub.season) else { return false }
+                    if !rowCats.isEmpty && !sub.specialCats.isEmpty && rowCats.isDisjoint(with: sub.specialCats) {
+                        return false
+                    }
+                    return titleSimilarity(rowTokens, sub.titleTokens) >= 0.60
+                }
+                if let best = bestByTitleSimilarity(for: rowTokens, among: candidates) {
+                    usedSubs.insert(best.url)
+                    rows[idx].subtitle = best
+                    rows[idx].subtitleMatchKind = .titleSimilarity
+                }
+            }
+
+            // Unmatched external subtitles become explicit rows with "No match found" on missing media sides
+            for sub in subMeta where !usedSubs.contains(sub.url) {
+                rows.append(
+                    MutablePairedRow(
+                        source: nil,
+                        target: nil,
+                        subtitle: sub,
+                        episodeKey: sub.episodeKey,
+                        mediaMatchKind: .unmatched,
+                        subtitleMatchKind: .unmatched
+                    )
+                )
+            }
+        }
+
+        // MARK: Build Final Drafts & Verification Status
+        let drafts: [PairedEpisodeDraft] = rows.map { row in
+            let finalMatchKind: PairMatchKind
+            let isVerified: Bool
+
+            switch subtitleMode {
+            case .embedded:
+                if row.source != nil && row.target != nil {
+                    finalMatchKind = row.mediaMatchKind
+                    isVerified = (row.mediaMatchKind == .exactFilename)
+                } else {
+                    finalMatchKind = .unmatched
+                    isVerified = false
+                }
+            case .external:
+                if row.source != nil && row.target != nil && row.subtitle != nil {
+                    let combined = PairMatchKind.combined(row.mediaMatchKind, row.subtitleMatchKind ?? .unmatched)
+                    finalMatchKind = combined
+                    isVerified = (combined == .exactFilename)
+                } else {
+                    finalMatchKind = .unmatched
+                    isVerified = false
+                }
+            }
+
+            return PairedEpisodeDraft(
+                episodeKey: row.episodeKey,
+                sourceFile: row.source?.url,
+                targetFile: row.target?.url,
+                externalSubtitleFile: row.subtitle?.url,
+                matchKind: finalMatchKind,
+                subtitleMatchKind: row.subtitleMatchKind,
+                isVerified: isVerified
             )
         }
 
@@ -523,18 +693,24 @@ public enum EpisodePairing {
             case (.none, .none):
                 break
             }
-            let lName = lhs.sourceFile?.lastPathComponent ?? lhs.targetFile?.lastPathComponent ?? ""
-            let rName = rhs.sourceFile?.lastPathComponent ?? rhs.targetFile?.lastPathComponent ?? ""
+            let lName = lhs.sourceFile?.lastPathComponent
+                ?? lhs.targetFile?.lastPathComponent
+                ?? lhs.externalSubtitleFile?.lastPathComponent
+                ?? ""
+            let rName = rhs.sourceFile?.lastPathComponent
+                ?? rhs.targetFile?.lastPathComponent
+                ?? rhs.externalSubtitleFile?.lastPathComponent
+                ?? ""
             return lName.localizedStandardCompare(rName) == .orderedAscending
         }
     }
 
-    private static func bestByTitleSimilarity(for src: FileMetadata, among candidates: [FileMetadata]) -> FileMetadata? {
+    private static func bestByTitleSimilarity(for referenceTokens: Set<String>, among candidates: [FileMetadata]) -> FileMetadata? {
         guard !candidates.isEmpty else { return nil }
         if candidates.count == 1 { return candidates[0] }
         return candidates.max { lhs, rhs in
-            let s1 = titleSimilarity(src.titleTokens, lhs.titleTokens)
-            let s2 = titleSimilarity(src.titleTokens, rhs.titleTokens)
+            let s1 = titleSimilarity(referenceTokens, lhs.titleTokens)
+            let s2 = titleSimilarity(referenceTokens, rhs.titleTokens)
             if s1 != s2 { return s1 < s2 }
             return lhs.url.lastPathComponent.localizedStandardCompare(rhs.url.lastPathComponent) == .orderedDescending
         }

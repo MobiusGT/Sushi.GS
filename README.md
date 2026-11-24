@@ -27,19 +27,26 @@ A native Apple Silicon (`arm64`) **macOS 26+** SwiftUI subtitle retiming and MKV
       <strong>Single Episode &amp; Live Log Inspector</strong><br>
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="docs/screenshots/batch-intake.png" alt="Batch Queue two-folder intake in Dark Mode">
+      <img src="docs/screenshots/batch-intake.png" alt="Auto Batch folder intake with Embedded/External switch in Dark Mode">
       <br>
-      <strong>Batch Two-Folder Intake</strong><br>
+      <strong>Auto Batch Intake (Embedded &amp; External)</strong><br>
     </td>
   </tr>
   <tr>
     <td width="50%" valign="top" align="center">
-      <img src="docs/screenshots/batch-queue.png" alt="Batch Queue pairing table and pair editor in Dark Mode">
+      <img src="docs/screenshots/batch-queue.png" alt="Auto Batch pairing queue and pair editor in Dark Mode">
       <br>
-      <strong>Batch Queue</strong><br>
+      <strong>Auto Batch Queue</strong><br>
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="docs/screenshots/dependencies.png" alt="In-App Dependency Manager in Dark Mode">
+      <img src="docs/screenshots/manual-batch.png" alt="Manual Batch 4-column workspace with native File Browser in Dark Mode">
+      <br>
+      <strong>Manual Batch (Native File Browser &amp; Columns)</strong><br>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top" align="center">
+      <img src="docs/screenshots/dependencies.png" width="50%" alt="In-App Dependency Manager in Dark Mode">
       <br>
       <strong>In-App Dependency Manager</strong><br>
     </td>
@@ -50,21 +57,22 @@ A native Apple Silicon (`arm64`) **macOS 26+** SwiftUI subtitle retiming and MKV
 
 ## Features
 
-- **Single Episode & Batch Queue Modes**
-  - **Single Episode:** Drag-and-drop Source media, Target media, and optional external `.ass`/`.srt`/`.ssa` subtitles (or pick embedded subtitle tracks directly from the Source file), with a one-click **Clear** reset (`⇧⌘K`) to return to a clean slate.
-  - **Two-Folder Batch Intake:** Drop or select both a Source folder and a Target folder before entering the pairing table, then use dedicated **Add Source Folder** (`⌥⌘O`) and **Add Target Folder** (`⌥⇧⌘O`) actions anytime.
-- **Smart Multi-Tier Episode Pairing & Verification**
-  - **Strict Season Safety:** Differing explicit seasons (`S01E05` vs `S02E05`, `Season 1` vs `Season 2`, `1x05` vs `2x05`) never cross-match.
-  - **Auto-Verified Exact Matches:** Exact filenames or identical filename stems across different containers (e.g. `Show - 01.mkv` ↔ `Show - 01.mp4`) auto-verify immediately.
-  - **Normalized Episode & Specials Cascade:** Strips release noise (`1080p`, `x265`, `10bit`, `FLAC2.0`, `[DEADBEEF]`, years), normalizes `S##E##`, leading zeroes (`005` → `5`), version tags (`01v2` → `1`), and fractional specials (`01.5` → `1.5`), conservatively matches non-numbered specials (`OVA`, `Movie`, `NCOP`/`NCED`), and leaves genuinely unmatched files clearly labeled **"No match found"** instead of forcing bad matches.
+- **Single Episode, Auto Batch & Manual Batch Workspaces**
+  - **Single Episode (`⌘1`):** Drag-and-drop Source media, Target media, and optional external `.ass`/`.srt`/`.ssa` subtitles (or pick embedded subtitle tracks directly from the Source file), with a one-click **Clear** reset (`⇧⌘K`) to return to a clean slate.
+  - **Auto Batch (`⌘2`):** Toggle between **Embedded** (2-folder intake: **Source Media Folder** + **Target Media Folder**) and **External** (3-folder intake adding **Subtitle Folder** for `.ass`/`.srt`/`.ssa` files), or click **Continue to Queue** anytime to enter Stage 2 with partial folders (or a blank row). Add folders anytime via **Add Source Media Folder** (`⌥⌘O`), **Add Target Media Folder** (`⌥⇧⌘O`), and **Add External Subtitle Folder** (`⌃⌥⌘O`).
+  - **Manual Batch (`⌘3`):** Pure row-by-row manual pairing with zero regex or filename auto-matching. Includes a lightweight native **File Browser** (clickable path breadcrumbs, parent-up `..`, expandable folders, natural Finder sorting, search & `All`/`Video`/`Subtitles` filters, multi-select drag-and-drop, and right-click quick-add actions) alongside smoothly resizable, scroll-synchronized **Source Video**, optional **Source Subtitles** (`External` mode), and **Target Video** columns with `#1`…`#N` row banding, independent drag reordering, **Insert Blank Slot** alignment, **Sort A–Z**, **Reverse**, and **Clear Column**.
+- **Smart Multi-Tier Auto Batch Pairing & Verification**
+  - **Strict Season Safety:** Differing explicit seasons (`S01E05` vs `S02E05`, `Season 1` vs `Season 2`, `1x05` vs `2x05`) never cross-match across media or external subtitles.
+  - **Auto-Verified Exact Matches:** Exact filenames or identical filename stems across different containers (and matching external subtitle stems in External mode) auto-verify immediately; heuristic matches on Target or Subtitle start as **Unverified** for quick confirmation.
+  - **Normalized Episode & Specials Cascade:** Strips release noise (`1080p`, `x265`, `10bit`, `FLAC2.0`, `[DEADBEEF]`, years), normalizes `S##E##`, leading zeroes (`005` → `5`), version tags (`01v2` → `1`), and fractional specials (`01.5` → `1.5`), conservatively matches non-numbered specials (`OVA`, `Movie`, `NCOP`/`NCED`), and leaves genuinely unmatched files clearly labeled **"No match found"** with contextual **Choose File…** pickers.
 - **Explicit Track Matching & Full Sushi Controls**
   - Inspects media via `ffprobe` (and `mkvmerge -J` for MKVs) to match any Source audio track against any Target audio track and select one or more embedded or external subtitles.
   - Exposes high-value Sushi parameters inline (**24 kHz HQ**, **Window**, **Max Window**, **Keyframe Snapping**, **Chapters**) and full defaults in **Settings → Sync / Merge / Audio**, with concise hover-only descriptions to keep the workspace uncluttered.
-  - Supports automatic or manual **MKVMerge** muxing, pre-merge lossless audio re-encoding (**Opus**, **AAC**, **EAC-3**), optional **Aegisub-CLI** subtitle resolution resampling, batch track rules, and reusable presets.
+  - Supports automatic or manual **MKVMerge** muxing, pre-merge lossless audio re-encoding (**Opus**, **AAC**, **EAC-3**), optional **Aegisub-CLI** subtitle resolution resampling, batch track rules, and reusable presets across both Auto Batch and Manual Batch.
 - **Live Log Inspector & Automatic Audio-Matching Warnings**
   - Real-time streaming Log Inspector (`⌃⌘I`) with search, `All` / `Warnings` / `Errors` filtering, copy, and `.log` export.
   - Automatically flags max-window fallbacks, broken segments, high audio diff scores, sudden shift jumps, large average shifts, chapter/keyframe inconsistencies, and pipeline warnings with a prominent warning banner and one-click **Jump to Warning**.
-- **Zero-Terminal In-App Dependency Manager**
+- **Zero-Terminal In-App Dependency Manager (`⌘4`)**
   - Installs and updates `uv`, managed Python 3.13, `sushi-batch` (+ `sushi-sub-next`), and standalone Apple Silicon `ffmpeg`/`ffprobe` directly inside `~/Library/Application Support/Sushi.GS/`, plus optional `mkvmerge`, `opusenc`, and guided `aegisub-cli` setup.
 
 ---
@@ -73,8 +81,8 @@ A native Apple Silicon (`arm64`) **macOS 26+** SwiftUI subtitle retiming and MKV
 
 Requires an **Apple Silicon Mac running macOS 26+**.
 
-1. Download the latest **`Sushi.GS.dmg`** from [GitHub Releases](https://github.com/MobiusGT/Sushi.GS/releases).
-2. Open the `.dmg` and drag **`Sushi.GS.app`** into **`Applications`**.
+1. Download **`Sushi.GS-0.1.1-arm64.dmg`** (and optionally verify its checksum with `shasum -a 256 -c Sushi.GS-0.1.1-arm64.dmg.sha256`) from [GitHub Releases](https://github.com/MobiusGT/Sushi.GS/releases).
+2. Open **`Sushi.GS-0.1.1-arm64.dmg`** and drag **`Sushi.GS.app`** into **`Applications`**.
 3. Launch **`Sushi.GS`** from `/Applications`, Spotlight, or the Apps drawer (its window title bar displays **Gas Station Sushi**).
 4. On first launch, click **Install Required Dependencies** in the **Dependencies** view to provision `uv`, Python 3.13, `sushi-batch`, `ffmpeg`, and `ffprobe` automatically.
 
@@ -114,7 +122,7 @@ swift test
 # Build Release arm64 app bundle into ~/Applications/Sushi.GS.app
 ./build.sh --open
 
-# Package a GitHub-shareable .dmg + .sha256 into dist/
+# Package dist/Sushi.GS-0.1.1-arm64.dmg + .sha256
 scripts/build_dmg.sh
 ```
 

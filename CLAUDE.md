@@ -10,4 +10,4 @@
   - `tools/selftest.sh` runs in-app self-tests
   - `tools/snap.sh` captures light & dark snapshots + layout probes
   - `tools/grid-lint.sh` and `swift tools/check-layout.swift /tmp/SushiGS-shots/*-layout.json` verify layout
-  - `scripts/build_dmg.sh` builds `dist/Sushi.GS-0.1.0-arm64.dmg` + `.sha256`
+  - `scripts/build_dmg.sh` builds `dist/Sushi.GS-0.1.1-arm64.dmg` + `.sha256`

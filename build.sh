@@ -7,8 +7,8 @@ set -euo pipefail
 here=${0:A:h}
 exec_name="SushiGS"
 app_name="Sushi.GS"
-version="${APP_VERSION:-0.1.0}"
-build_num="${APP_BUILD:-1}"
+version="${APP_VERSION:-0.1.1}"
+build_num="${APP_BUILD:-2}"
 scratch="$HOME/Library/Developer/SushiGS/build"
 config=release
 [[ " $* " == *" --debug "* ]] && config=debug
