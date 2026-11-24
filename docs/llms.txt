@@ -1,0 +1,67 @@
+# Sushi.GS (Gas Station Sushi)
+
+> Native Apple Silicon (`arm64`) macOS 26+ SwiftUI GUI for Sushi audio-based subtitle retiming and MKV batch muxing, wrapping `C1fer/sushi-batch` and `C1fer/sushi-next` (`sushi-sub-next`) with zero Terminal setup.
+
+## Quick Facts
+
+- **App Name:** Sushi.GS (window title: Gas Station Sushi)
+- **Current Version:** `0.1.1` (build `2`)
+- **Platform:** macOS 26+ on Apple Silicon (`arm64`)
+- **License:** MIT (open source)
+- **Download:** `Sushi.GS-0.1.1-arm64.dmg` (+ `.sha256`) on GitHub Releases
+- **Website:** https://mobiusgt.github.io/Sushi.GS/
+- **Repository:** https://github.com/MobiusGT/Sushi.GS
+- **Releases:** https://github.com/MobiusGT/Sushi.GS/releases
+- **v0.1.1 Release:** https://github.com/MobiusGT/Sushi.GS/releases/tag/v0.1.1
+
+## What Sushi.GS Solves
+
+Sushi.GS brings the Sushi dual-audio subtitle synchronization workflow to macOS as a native SwiftUI app. It retimes `.ass`, `.srt`, `.ssa`, `.sub`, and `.vtt` subtitles—especially WEB-DL or fansub ASS subtitles moved onto Blu-ray (BD Remux) releases—by comparing the Source video's audio waveform directly against the Target video's audio waveform without breaking ASS typesetting, signs, karaoke, or animations.
+
+## Core Workspaces
+
+1. **Single Episode (`⌘1`):** Drag-and-drop Source media, Target media, and embedded or external subtitles; pick exact Source/Target audio tracks inspected by `ffprobe` / `mkvmerge`; adjust Sushi flags (`24 kHz HQ`, `Window`, `Max Window`, `Keyframes`, `Chapters`) inline.
+2. **Auto Batch (`⌘2`):** Supports both **Embedded** (2-folder: Source Media + Target Media) and **External** (3-folder: Source Media + Target Media + Subtitle Folder, including nested subfolders and symlinks) pairing. Uses a strict season-safe multi-tier cascade that handles `S##E##`, fansub naming (`[Moozzi2] Show - 01`), and arbitrarily zero-padded BDMV files (`[Stardust] 00001.mkv`, `[Stardust] 00001 complete++.ass`), auto-verifies exact filename matches, isolates numbered extras (`Menu`, `PV`, `CM`, `NCOP`, `NCED`, `OVA`), and labels missing files clearly as `"No match found"`.
+3. **Manual Batch (`⌘3`):** Strict row-by-row index pairing (`#1`…`#N`) with zero filename/regex auto-matching, featuring an inverted-L (`Γ`) native File Browser (Back/Forward/Up history, breadcrumbs, search, `All`/`Video`/`Subtitles` filter pills, type-locked multi-select drag-and-drop) and resizable, scroll-synchronized Source Video, optional Source Subtitles, and Target Video columns with blank-slot insertion.
+4. **Dependencies (`⌘4`):** Zero-terminal in-app manager that installs and updates `uv`, managed Python 3.13, `C1fer/sushi-batch` + `C1fer/sushi-next`, standalone Apple Silicon `ffmpeg`/`ffprobe`, optional `mkvmerge` and `opusenc`, and guided `aegisub-cli` setup inside `~/Library/Application Support/Sushi.GS/`.
+
+## Post-Sync Pipeline & Diagnostics
+
+- Automatic or manual **MKVMerge** muxing with Source attachments/fonts and chapter controls.
+- Pre-merge lossless Target audio re-encoding (**Opus**, **AAC**, **EAC-3**) while copying lossy tracks untouched.
+- Optional **Aegisub-CLI** ASS subtitle resolution resampling before muxing.
+- Collapsible real-time **Log Inspector** (`⌃⌘I`) with automatic detection of max-window fallbacks, broken segments, high audio diff scores, and sudden shift jumps.
+
+## Comparison Summary
+
+- **Sushi.GS:** Native Apple Silicon macOS SwiftUI GUI; Single Episode, Auto Batch (2-way & 3-way), and Manual Batch; `.dmg` + 1-click in-app dependency installer.
+- **C1fer/sushi-batch:** Cross-platform Python (PyQt / CLI) batch wrapper; requires manual Python/FFmpeg/MKVToolNix setup (Sushi.GS wraps upstream `sushi-batch` directly without forking).
+- **SubtitleSynchroLauncher:** Windows-only GUI wrapper.
+- **tp7/Sushi:** Original legacy CLI (unmaintained; succeeded by `FichteFoll/Sushi` → `C1fer/sushi-next`).
+- **Sushi.Net:** Cross-platform .NET/C# CLI (no GUI).
+- **vs `ffsubsync` / `alass`:** `ffsubsync` and `alass` use Voice Activity Detection (VAD) or reference subtitles, which can drift on anime cuts, commercials, or ASS typesetting. Sushi matches Source and Target audio waveforms directly for frame-accurate, keyframe-snapped per-segment shifts.
+
+## Installation (macOS 26+ Apple Silicon)
+
+1. Download `Sushi.GS-0.1.1-arm64.dmg` from https://github.com/MobiusGT/Sushi.GS/releases.
+2. Open the `.dmg` and drag `Sushi.GS.app` to `/Applications`.
+3. Launch `Sushi.GS` (if Gatekeeper warns on ad-hoc signed builds, click **Open Anyway** in System Settings → Privacy & Security or run `xattr -cr /Applications/Sushi.GS.app`).
+4. Click **Install Required Dependencies** in **Dependencies (`⌘4`)**.
+
+## Upstream Credits & Lineage
+
+- `C1fer/sushi-batch`: https://github.com/C1fer/sushi-batch
+- `C1fer/sushi-next` (`sushi-sub-next`): https://github.com/C1fer/sushi-next
+- `FichteFoll/Sushi` (`sushi-sub`): https://github.com/FichteFoll/Sushi
+- `tp7/Sushi`: https://github.com/tp7/Sushi
+
+## Documentation Links
+
+- [README](https://github.com/MobiusGT/Sushi.GS/blob/main/README.md): Full feature overview, installation instructions, comparison table, FAQ, and build steps.
+- [Landing Page](https://mobiusgt.github.io/Sushi.GS/): Project overview, screenshots, comparison table, FAQ, and release links.
+- [Releases](https://github.com/MobiusGT/Sushi.GS/releases): Prebuilt Apple Silicon `.dmg` downloads and SHA-256 checksums.
+- [License (MIT)](https://github.com/MobiusGT/Sushi.GS/blob/main/LICENSE): MIT open-source license.
+
+## AI Disclosure
+
+This macOS SwiftUI frontend was fully made by Gemini 4 Neon Extra High.

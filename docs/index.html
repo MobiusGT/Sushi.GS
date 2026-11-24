@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sushi.GS (Gas Station Sushi) — Native Mac GUI for Sushi Subtitle Retiming &amp; sushi-batch</title>
+  <meta name="description" content="Sushi.GS (Gas Station Sushi) is a native Apple Silicon macOS SwiftUI GUI for Sushi subtitle retiming, wrapping C1fer/sushi-batch and C1fer/sushi-next for audio-based ASS, SRT, and SSA subtitle synchronization, WEB-DL to Blu-ray (BD Remux) syncing, Auto Batch, Manual Batch, and MKV muxing.">
+  <meta name="keywords" content="Sushi GUI for Mac, macOS subtitle retiming, sushi-batch Mac app, sushi-next macOS, sync ASS subtitles to Blu-ray on macOS, BD Remux subtitle sync, Apple Silicon subtitle sync, MKVMerge batch macOS">
+  <meta name="robots" content="index, follow">
+  <meta name="theme-color" content="#f5f5f7" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#161618" media="(prefers-color-scheme: dark)">
+  <link rel="canonical" href="https://mobiusgt.github.io/Sushi.GS/">
+  <link rel="icon" type="image/png" href="assets/icon.png">
+  <link rel="alternate" type="text/plain" title="LLMs Summary" href="https://mobiusgt.github.io/Sushi.GS/llms.txt">
+
+  <!-- Open Graph -->
+  <meta property="og:type" content="website">
+  <meta property="og:site_name" content="Sushi.GS — Gas Station Sushi">
+  <meta property="og:title" content="Sushi.GS (Gas Station Sushi) — Native Mac GUI for Sushi Subtitle Retiming">
+  <meta property="og:description" content="Native Apple Silicon macOS SwiftUI GUI wrapping C1fer/sushi-batch and C1fer/sushi-next for audio-based ASS/SRT/SSA subtitle synchronization, WEB-DL to Blu-ray syncing, Auto Batch, Manual Batch, and MKV muxing.">
+  <meta property="og:url" content="https://mobiusgt.github.io/Sushi.GS/">
+  <meta property="og:image" content="https://mobiusgt.github.io/Sushi.GS/screenshots/single-episode.png">
+  <meta property="og:image:alt" content="Sushi.GS Single Episode workspace on macOS showing Source/Target audio matching and Live Log Inspector">
+
+  <!-- Twitter / X Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Sushi.GS — Native Mac GUI for Sushi Subtitle Retiming &amp; sushi-batch">
+  <meta name="twitter:description" content="Sync WEB-DL or fansub ASS/SRT/SSA subtitles to Blu-ray MKVs on Apple Silicon macOS with zero Terminal setup.">
+  <meta name="twitter:image" content="https://mobiusgt.github.io/Sushi.GS/screenshots/single-episode.png">
+
+  <!-- Structured Data: SoftwareApplication + FAQPage -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "SoftwareApplication",
+        "name": "Sushi.GS",
+        "alternateName": "Gas Station Sushi",
+        "applicationCategory": "MultimediaApplication",
+        "operatingSystem": "macOS 26+ (Apple Silicon arm64)",
+        "softwareVersion": "0.1.1",
+        "description": "Native Apple Silicon macOS SwiftUI GUI for Sushi subtitle retiming wrapping C1fer/sushi-batch and C1fer/sushi-next (sushi-sub-next). Performs audio-based ASS, SRT, and SSA subtitle synchronization for WEB-DL to Blu-ray (BD Remux) syncing with Single Episode, Auto Batch, Manual Batch, MKV muxing, and a zero-terminal in-app dependency manager.",
+        "url": "https://mobiusgt.github.io/Sushi.GS/",
+        "downloadUrl": "https://github.com/MobiusGT/Sushi.GS/releases/tag/v0.1.1",
+        "installUrl": "https://github.com/MobiusGT/Sushi.GS/releases",
+        "codeRepository": "https://github.com/MobiusGT/Sushi.GS",
+        "license": "https://opensource.org/licenses/MIT",
+        "image": "https://mobiusgt.github.io/Sushi.GS/assets/icon.png",
+        "screenshot": [
+          "https://mobiusgt.github.io/Sushi.GS/screenshots/single-episode.png",
+          "https://mobiusgt.github.io/Sushi.GS/screenshots/batch-intake.png",
+          "https://mobiusgt.github.io/Sushi.GS/screenshots/batch-queue.png",
+          "https://mobiusgt.github.io/Sushi.GS/screenshots/manual-batch.png",
+          "https://mobiusgt.github.io/Sushi.GS/screenshots/dependencies.png"
+        ],
+        "offers": {
+          "@type": "Offer",
+          "price": "0",
+          "priceCurrency": "USD"
+        },
+        "featureList": [
+          "Native Apple Silicon (arm64) macOS 26+ SwiftUI GUI",
+          "Audio-based ASS, SRT, and SSA subtitle synchronization via C1fer/sushi-batch and C1fer/sushi-next",
+          "Single Episode, Auto Batch (Embedded 2-way & External 3-way), and Manual Batch workspaces",
+          "Strict season-safe BDMV and fansub episode pairing with auto-verified exact matches",
+          "Inverted-L native File Browser with multi-select drag-and-drop in Manual Batch",
+          "Automatic and manual MKVMerge muxing, lossless audio encoding (Opus/AAC/EAC-3), and optional Aegisub-CLI resampling",
+          "Zero-terminal in-app dependency installer for uv, Python 3.13, sushi-batch, ffmpeg, ffprobe, and mkvmerge",
+          "Live Log Inspector with automatic audio-matching warning detection"
+        ]
+      },
+      {
+        "@type": "FAQPage",
+        "mainEntity": [
+          {
+            "@type": "Question",
+            "name": "Is there a native Mac GUI for Sushi subtitle retiming?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Yes. Sushi.GS (Gas Station Sushi) is a native Apple Silicon SwiftUI macOS app that wraps C1fer/sushi-batch and C1fer/sushi-next (sushi-sub-next) with Single Episode, Auto Batch, Manual Batch, explicit track pickers, inline Sushi sync flags, and a live Log Inspector."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How do I sync WEB-DL or fansub ASS subtitles to Blu-ray (BD Remux) MKVs on macOS without breaking typesetting?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Add your WEB-DL (Source) files, Blu-ray / BD Remux (Target) files, and optional external ASS/SRT/SSA subtitles into Single Episode, Auto Batch, or Manual Batch, pick the matching audio track on each side, and click Run Sync. Sushi aligns each dialogue and typesetting line individually by matching audio waveforms—preserving ASS styling, signs, and karaoke—and can optionally resample resolution with aegisub-cli and mux into an MKV with mkvmerge."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "Does Sushi.GS require Terminal commands or manual Homebrew/Python installation?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "No. Download Sushi.GS-0.1.1-arm64.dmg, drag Sushi.GS.app to Applications, and click Install Required Dependencies inside the Dependencies view. Sushi.GS automatically provisions uv, Python 3.13, sushi-batch, sushi-sub-next, Apple Silicon ffmpeg/ffprobe, and optional mkvmerge and opusenc inside ~/Library/Application Support/Sushi.GS/."
+            }
+          },
+          {
+            "@type": "Question",
+            "name": "How does Sushi dual-audio matching differ from ffsubsync or alass?",
+            "acceptedAnswer": {
+              "@type": "Answer",
+              "text": "Tools like ffsubsync and alass rely on Voice Activity Detection (VAD) or a reference subtitle file, which can drift across anime cuts, commercials, differing OP/ED edits, or non-dialogue ASS typesetting. Sushi compares the Source video's audio waveform directly against the Target video's audio waveform for per-segment, keyframe-snapped timing shifts that keep ASS typesetting intact."
+            }
+          }
+        ]
+      }
+    ]
+  }
+  </script>
+
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f5f5f7;
+      --surface: #ffffff;
+      --surface-alt: #f0f1f4;
+      --text: #1d1d1f;
+      --muted: #58585f;
+      --border: rgba(0, 0, 0, 0.1);
+      --accent: #d97706;
+      --accent-hover: #b45309;
+      --accent-soft: rgba(217, 119, 6, 0.12);
+      --radius: 14px;
+      --shadow: 0 8px 28px rgba(0, 0, 0, 0.06);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #141416;
+        --surface: #1e1e22;
+        --surface-alt: #26262b;
+        --text: #f5f5f7;
+        --muted: #a1a1aa;
+        --border: rgba(255, 255, 255, 0.11);
+        --accent: #f59e0b;
+        --accent-hover: #fbbf24;
+        --accent-soft: rgba(245, 158, 11, 0.16);
+        --shadow: 0 10px 32px rgba(0, 0, 0, 0.36);
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro Display", "Helvetica Neue", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    a {
+      color: var(--accent);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    .wrap {
+      max-width: 1020px;
+      margin: 0 auto;
+      padding: 0 24px;
+    }
+
+    header.hero {
+      padding: 64px 0 44px;
+      text-align: center;
+    }
+
+    .app-icon {
+      width: 112px;
+      height: 112px;
+      border-radius: 26px;
+      box-shadow: var(--shadow);
+      margin-bottom: 18px;
+    }
+
+    .badges {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 8px;
+      margin-bottom: 18px;
+    }
+
+    .pill {
+      display: inline-block;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 500;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+
+    .pill.accent {
+      background: var(--accent-soft);
+      border-color: transparent;
+      color: var(--accent);
+    }
+
+    h1 {
+      margin: 0 0 12px;
+      font-size: clamp(2rem, 4vw, 2.85rem);
+      letter-spacing: -0.025em;
+      line-height: 1.15;
+    }
+
+    .subtitle {
+      max-width: 740px;
+      margin: 0 auto 28px;
+      font-size: 1.07rem;
+      color: var(--muted);
+    }
+
+    .cta-row {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: center;
+      gap: 12px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 12px 22px;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      border: 1px solid var(--border);
+      transition: transform 0.12s ease, background 0.12s ease;
+    }
+
+    .btn:hover {
+      text-decoration: none;
+      transform: translateY(-1px);
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #111111;
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-hover);
+      border-color: var(--accent-hover);
+    }
+
+    .btn-secondary {
+      background: var(--surface);
+      color: var(--text);
+    }
+
+    .btn-secondary:hover {
+      background: var(--surface-alt);
+    }
+
+    section {
+      padding: 36px 0;
+    }
+
+    h2 {
+      margin: 0 0 18px;
+      font-size: 1.55rem;
+      letter-spacing: -0.02em;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+      gap: 16px;
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      box-shadow: var(--shadow);
+    }
+
+    .card h3 {
+      margin: 0 0 8px;
+      font-size: 1.05rem;
+    }
+
+    .card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.95rem;
+    }
+
+    .gallery {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 18px;
+    }
+
+    figure {
+      margin: 0;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      overflow: hidden;
+      box-shadow: var(--shadow);
+    }
+
+    figure img {
+      display: block;
+      width: 100%;
+      height: auto;
+    }
+
+    figcaption {
+      padding: 12px 16px;
+      font-size: 0.9rem;
+      font-weight: 500;
+      color: var(--muted);
+      border-top: 1px solid var(--border);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 0.93rem;
+      min-width: 680px;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 13px 16px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: top;
+    }
+
+    th {
+      background: var(--surface-alt);
+      font-weight: 600;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .faq-list {
+      display: grid;
+      gap: 14px;
+    }
+
+    .faq-item {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      box-shadow: var(--shadow);
+    }
+
+    .faq-item h3 {
+      margin: 0 0 8px;
+      font-size: 1.04rem;
+    }
+
+    .faq-item p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.96rem;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      font-size: 0.88em;
+      background: var(--surface-alt);
+      padding: 2px 6px;
+      border-radius: 6px;
+    }
+
+    footer {
+      margin-top: 28px;
+      padding: 28px 0 48px;
+      border-top: 1px solid var(--border);
+      font-size: 0.9rem;
+      color: var(--muted);
+    }
+
+    .footer-links {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin-bottom: 10px;
+    }
+  </style>
+</head>
+<body>
+  <header class="hero">
+    <div class="wrap">
+      <img class="app-icon" src="assets/icon.png" width="112" height="112" alt="Sushi.GS Gas Station Sushi macOS app icon">
+      <div class="badges">
+        <span class="pill accent">Version 0.1.1</span>
+        <span class="pill">macOS 26+ · Apple Silicon (arm64)</span>
+        <span class="pill">MIT License · Free &amp; Open Source</span>
+      </div>
+      <h1>Sushi.GS <span style="font-weight: 400; color: var(--muted);">aka Gas Station Sushi</span></h1>
+      <p class="subtitle">
+        A native Apple Silicon macOS SwiftUI GUI for <strong>Sushi subtitle retiming</strong>, wrapping
+        <a href="https://github.com/C1fer/sushi-batch">C1fer/sushi-batch</a> and
+        <a href="https://github.com/C1fer/sushi-next">C1fer/sushi-next</a> (<code>sushi-sub-next</code>).
+        Synchronize WEB-DL or fansub <code>.ass</code>, <code>.srt</code>, and <code>.ssa</code> subtitles to Blu-ray
+        (BD Remux) MKVs using dual-audio waveform matching—preserving ASS typesetting—with
+        <strong>Single Episode</strong>, <strong>Auto Batch</strong>, <strong>Manual Batch</strong>, and built-in
+        <strong>MKV muxing</strong>.
+      </p>
+      <div class="cta-row">
+        <a class="btn btn-primary" href="https://github.com/MobiusGT/Sushi.GS/releases/tag/v0.1.1">Download v0.1.1 (.dmg)</a>
+        <a class="btn btn-secondary" href="https://github.com/MobiusGT/Sushi.GS">View on GitHub</a>
+        <a class="btn btn-secondary" href="https://github.com/MobiusGT/Sushi.GS/releases">All Releases</a>
+      </div>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section aria-labelledby="features-heading">
+      <h2 id="features-heading">Built for Native macOS Subtitle Retiming</h2>
+      <div class="grid">
+        <article class="card">
+          <h3>Single Episode, Auto Batch &amp; Manual Batch</h3>
+          <p>Sync a single episode, auto-pair full anime seasons in <strong>Embedded</strong> (2-folder) or <strong>External</strong> (3-folder) mode, or line up any files row-by-row in <strong>Manual Batch</strong> with a native inverted-L File Browser.</p>
+        </article>
+        <article class="card">
+          <h3>Season-Safe BDMV &amp; Fansub Pairing</h3>
+          <p>Matches <code>S01E01</code>, fansub titles like <code>[Moozzi2] Show - 01</code>, and zero-padded BDMV files like <code>[Stardust] 00001 complete++.ass</code> while strictly rejecting mismatched seasons and isolating bonus extras.</p>
+        </article>
+        <article class="card">
+          <h3>Full Sushi, MKVMerge &amp; Audio Controls</h3>
+          <p>Inspect and pair audio/subtitle tracks via <code>ffprobe</code> &amp; <code>mkvmerge</code>, tweak 24 kHz HQ, window, keyframes, and chapters inline, re-encode lossless audio (Opus/AAC/EAC-3), and optionally resample ASS resolution via <code>aegisub-cli</code>.</p>
+        </article>
+        <article class="card">
+          <h3>Zero-Terminal Dependency Manager</h3>
+          <p>One click installs and updates <code>uv</code>, Python 3.13, <code>sushi-batch</code>, <code>sushi-sub-next</code>, Apple Silicon <code>ffmpeg</code>/<code>ffprobe</code>, and optional <code>mkvmerge</code> inside <code>~/Library/Application Support/Sushi.GS/</code>.</p>
+        </article>
+      </div>
+    </section>
+
+    <section aria-labelledby="screenshots-heading">
+      <h2 id="screenshots-heading">Screenshots</h2>
+      <div class="gallery">
+        <figure>
+          <img src="screenshots/single-episode.png" loading="lazy" alt="Sushi.GS Single Episode workspace and Live Log Inspector on macOS">
+          <figcaption>Single Episode &amp; Live Log Inspector</figcaption>
+        </figure>
+        <figure>
+          <img src="screenshots/batch-intake.png" loading="lazy" alt="Sushi.GS Auto Batch folder intake with Embedded and External subtitle switch">
+          <figcaption>Auto Batch Intake (Embedded &amp; External)</figcaption>
+        </figure>
+        <figure>
+          <img src="screenshots/batch-queue.png" loading="lazy" alt="Sushi.GS Auto Batch episode pairing queue and track editor">
+          <figcaption>Auto Batch Queue &amp; Verification</figcaption>
+        </figure>
+        <figure>
+          <img src="screenshots/manual-batch.png" loading="lazy" alt="Sushi.GS Manual Batch inverted-L File Browser and synchronized pairing columns">
+          <figcaption>Manual Batch (Inverted-L File Browser &amp; Columns)</figcaption>
+        </figure>
+        <figure>
+          <img src="screenshots/dependencies.png" loading="lazy" alt="Sushi.GS zero-terminal In-App Dependency Manager">
+          <figcaption>In-App Dependency Manager</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <section aria-labelledby="compare-heading">
+      <h2 id="compare-heading">How Sushi.GS Compares</h2>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Tool</th>
+              <th>macOS Apple Silicon</th>
+              <th>Native GUI</th>
+              <th>Batch Modes</th>
+              <th>Setup</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>Sushi.GS</strong></td>
+              <td>Yes (<code>arm64</code>, macOS 26+)</td>
+              <td>Native macOS SwiftUI</td>
+              <td>Single Episode, Auto Batch (2- &amp; 3-way), Manual Batch</td>
+              <td><code>.dmg</code> + 1-click in-app installer (<code>uv</code>, <code>sushi-batch</code>, <code>ffmpeg</code>, <code>mkvmerge</code>)</td>
+            </tr>
+            <tr>
+              <td><a href="https://github.com/C1fer/sushi-batch"><strong>C1fer/sushi-batch</strong></a></td>
+              <td>Via Python 3.13+</td>
+              <td>Cross-platform PyQt / CLI</td>
+              <td>Folder auto-batch + MKV merge &amp; audio encode</td>
+              <td>Manual Python / <code>uv</code> + FFmpeg / MKVToolNix setup</td>
+            </tr>
+            <tr>
+              <td><strong>SubtitleSynchroLauncher</strong></td>
+              <td>No (Windows only)</td>
+              <td>Windows GUI</td>
+              <td>Batch launcher wrapper</td>
+              <td>Windows binary + manual tool paths</td>
+            </tr>
+            <tr>
+              <td><a href="https://github.com/tp7/Sushi"><strong>tp7/Sushi</strong></a></td>
+              <td>Legacy (unmaintained Python)</td>
+              <td>CLI only</td>
+              <td>Single-file CLI (manual scripting)</td>
+              <td>Manual Python / OpenCV / FFmpeg setup</td>
+            </tr>
+            <tr>
+              <td><strong>Sushi.Net</strong></td>
+              <td>Via .NET runtime / build</td>
+              <td>CLI only</td>
+              <td>Single-file CLI (manual scripting)</td>
+              <td>Manual .NET + FFmpeg / MKVToolNix setup</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section aria-labelledby="faq-heading">
+      <h2 id="faq-heading">Frequently Asked Questions</h2>
+      <div class="faq-list">
+        <article class="faq-item">
+          <h3>Is there a native Mac GUI for Sushi subtitle retiming?</h3>
+          <p>Yes. <strong>Sushi.GS</strong> ("Gas Station Sushi") is a native Apple Silicon SwiftUI macOS app that wraps <a href="https://github.com/C1fer/sushi-batch">C1fer/sushi-batch</a> and <a href="https://github.com/C1fer/sushi-next">C1fer/sushi-next</a> (<code>sushi-sub-next</code>) with Single Episode, Auto Batch, Manual Batch, explicit track pickers, inline Sushi sync flags, and a live Log Inspector.</p>
+        </article>
+        <article class="faq-item">
+          <h3>How do I sync WEB-DL or fansub ASS subtitles to Blu-ray (BD Remux) MKVs on macOS without breaking typesetting?</h3>
+          <p>Drop your WEB-DL (Source) files, Blu-ray / BD Remux (Target) files, and optional external <code>.ass</code>/<code>.srt</code>/<code>.ssa</code> subtitles into Single Episode, Auto Batch, or Manual Batch, select the matching audio track on each side, and run Sync. Sushi shifts each dialogue and typesetting event individually via waveform matching—preserving ASS styling, signs, karaoke, and animations—and can optionally resample resolution with <code>aegisub-cli</code> and mux everything with <code>mkvmerge</code>.</p>
+        </article>
+        <article class="faq-item">
+          <h3>Does Sushi.GS require Terminal commands or manual Homebrew/Python installation?</h3>
+          <p>No. Download <code>Sushi.GS-0.1.1-arm64.dmg</code>, drag <code>Sushi.GS.app</code> into Applications, and click <strong>Install Required Dependencies</strong> inside the <strong>Dependencies</strong> tab. Sushi.GS manages <code>uv</code>, Python 3.13, <code>sushi-batch</code> + <code>sushi-sub-next</code>, standalone Apple Silicon <code>ffmpeg</code>/<code>ffprobe</code>, and optional <code>mkvmerge</code> / <code>opusenc</code> inside <code>~/Library/Application Support/Sushi.GS/</code>.</p>
+        </article>
+        <article class="faq-item">
+          <h3>How does Sushi dual-audio matching differ from <code>ffsubsync</code> or <code>alass</code>?</h3>
+          <p><code>ffsubsync</code> and <code>alass</code> rely on Voice Activity Detection (VAD) or a second reference subtitle track, which can drift across anime scene cuts, commercials, differing OP/ED edits, or non-dialogue ASS signs. Sushi compares the Source video's actual audio waveform directly against the Target video's audio waveform for per-segment, keyframe-snapped timing shifts that keep ASS typesetting intact.</p>
+        </article>
+      </div>
+    </section>
+
+    <section aria-labelledby="lineage-heading">
+      <h2 id="lineage-heading">Upstream Sushi Lineage &amp; Credits</h2>
+      <div class="card">
+        <p>
+          Sushi.GS is a macOS SwiftUI frontend built on the upstream Sushi ecosystem without forking core internals:
+          <a href="https://github.com/C1fer/sushi-batch">C1fer/sushi-batch</a> &rarr;
+          <a href="https://github.com/C1fer/sushi-next">C1fer/sushi-next</a> (<code>sushi-sub-next</code>) &rarr;
+          <a href="https://github.com/FichteFoll/Sushi">FichteFoll/Sushi</a> (<code>sushi-sub</code>) &rarr;
+          <a href="https://github.com/tp7/Sushi">tp7/Sushi</a>.
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <footer>
+    <div class="wrap">
+      <div class="footer-links">
+        <a href="https://github.com/MobiusGT/Sushi.GS">GitHub Repository</a>
+        <a href="https://github.com/MobiusGT/Sushi.GS/releases/tag/v0.1.1">v0.1.1 Release (.dmg)</a>
+        <a href="https://github.com/MobiusGT/Sushi.GS/blob/main/README.md">README</a>
+        <a href="llms.txt">llms.txt</a>
+        <a href="https://github.com/MobiusGT/Sushi.GS/blob/main/LICENSE">MIT License</a>
+      </div>
+      <p style="margin: 0;">Sushi.GS ("Gas Station Sushi") &middot; Version 0.1.1 &middot; Frontend fully made by Gemini 4 Neon Extra High.</p>
+    </div>
+  </footer>
+</body>
+</html>
