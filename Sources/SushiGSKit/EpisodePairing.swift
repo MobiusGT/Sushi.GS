@@ -129,16 +129,17 @@ public enum EpisodePairing {
 
     private static let noisePatterns: [String] = [
         #"[\[\(][0-9A-Fa-f]{8}[\]\)]"#,                                                        // CRC32 tags [A1B2C3D4]
+        #"\b\d{3,4}x\d{3,4}\b"#,                                                               // Pixel dimensions 1920x1080
         #"\b(?:2160|1080|720|576|480)[pi]\b"#,                                                 // Video resolution
         #"\b(?:4K|UHD|FHD|HD)\b"#,                                                             // Resolution shorthands
         #"\b(?:x|h)\.?26[45]\b"#,                                                              // x264 / H.265
         #"\b(?:hevc|avc|av1|vp9|xvid|divx|mpeg2)\b"#,                                          // Video codecs
-        #"\b(?:10|8|12)[\s\-]?bit\b"#,                                                         // Bit depth
+        #"\b(?:8|10|12|16|24)[\s\-]?bit\b"#,                                                   // Bit depth
         #"\b(?:e-?ac-?3|aac|ac3|ddp|dd\+|dts(?:-?hd)?|truehd|atmos|flac|opus|mp3|l?pcm)(?:[\s\.\-_]*\d(?:\.\d)?)?(?=$|[\s\.\-_\]\)])"#, // Audio codecs
-        #"\b[257]\.[01]\b"#,                                                                   // Channel layouts 5.1 / 2.0
+        #"(?<![A-Za-z0-9])[257]\.[01](?![A-Za-z0-9])"#,                                        // Channel layouts 5.1 / 2.0
         #"[\(\[](?:19|20)\d{2}[\)\]]"#,                                                        // Release year (2024)
-        #"\b(?:web-?dl|web-?rip|blu-?ray|bd-?rip|bd-?remux|remux|bd|dvd-?rip|hdtv|dual[\s\.\-_]?audio|multi[\s\.\-_]?subs?|repack|proper|uncensored|amzn|nf|cr|hidive|funimation)\b"#,
-        #"\bv[0-4]\b"#,                                                                        // Standalone v2
+        #"\b(?:web-?dl|web-?rip|blu-?ray|bd-?rip|bd-?remux|bdmv|remux|bd|dvd-?rip|dvd|hdtv|dual[\s\.\-_]?audio|multi[\s\.\-_]?subs?|repack|proper|uncensored|amzn|nf|cr|hidive|funimation)\b"#,
+        #"(?<![A-Za-z0-9])(?:v[0-9]|rev\d+)(?![A-Za-z0-9])"#,                                  // Standalone v2 / rev2
     ]
 
     /// Distinct special categories that must not cross-match each other in Tier 3 title similarity.
@@ -179,8 +180,13 @@ public enum EpisodePairing {
         let stem = URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent
         var cleaned = stem
 
-        // Strip version suffixes attached directly to episode numbers (e.g. `01v2` -> `01`, `S01E05v2` -> `S01E05`, `12.5v2` -> `12.5`).
-        cleaned = replaceRegex(#"(?i)(\d{1,3}(?:\.\d)?)v[1-9]\b"#, in: cleaned, with: "$1")
+        // Strip version suffixes attached directly to episode numbers (e.g. `01v2` -> `01`, `00001v2` -> `00001`, `S01E05v2` -> `S01E05`, `12.5v2` -> `12.5`).
+        cleaned = replaceRegex(#"(?i)(?<!\d)(0*\d{1,4}(?:\.\d)?)v[1-9]\b"#, in: cleaned, with: "$1")
+
+        // Strip release-group and technical metadata brackets BEFORE token-level noise stripping
+        // so blocks like `[Moozzi2]`, `(BD Remux 1080p)`, `(DVD 2)`, `[A1B2C3D4]`, `(1990)` are removed whole
+        // without leaving orphaned digits inside brackets.
+        cleaned = stripNonEpisodeBrackets(from: cleaned)
 
         for pattern in noisePatterns {
             cleaned = replaceRegex("(?i)\(pattern)", in: cleaned, with: " ")
@@ -188,15 +194,100 @@ public enum EpisodePairing {
         return cleaned
     }
 
+    /// Parses an arbitrarily zero-padded episode token (e.g. `00001` -> `1`, `01.5` -> `1.5`),
+    /// stripping leading zeroes before numeric bounds checks while rejecting unpadded 4-digit years
+    /// (`1900`–`2099`) and out-of-range IDs/dates.
+    private static func parseEpisodeNumber(_ raw: String) -> Double? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+
+        let parts = trimmed.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count <= 2 else { return nil }
+        let intPart = String(parts[0])
+        guard !intPart.isEmpty, intPart.allSatisfy(\.isNumber) else { return nil }
+
+        let hasLeadingZero = intPart.count > 1 && intPart.hasPrefix("0")
+        let strippedInt = String(intPart.drop(while: { $0 == "0" }))
+        let normalizedInt = strippedInt.isEmpty ? "0" : strippedInt
+
+        let normalized: String
+        if parts.count == 2 {
+            let fracPart = String(parts[1])
+            guard fracPart.count == 1, fracPart.allSatisfy(\.isNumber) else { return nil }
+            normalized = "\(normalizedInt).\(fracPart)"
+        } else {
+            normalized = normalizedInt
+        }
+
+        guard let value = Double(normalized), value.isFinite else { return nil }
+        guard value >= 0, value <= 1999 else { return nil }
+        // Reject unpadded 4-digit release years (e.g. 1990–2099), while always accepting zero-padded BDMV numbers (e.g. 00001).
+        if !hasLeadingZero && intPart.count == 4 && value >= 1900 && value <= 2099 {
+            return nil
+        }
+        return value
+    }
+
+    /// Removes bracketed/parenthesized release-group and technical metadata blocks (e.g. `[Moozzi2]`,
+    /// `[Stardust]`, `(BD Remux 1080p)`, `(DVD)`, `[1080p FLAC]`, `(rev2)`) while preserving pure
+    /// numeric episode brackets (`[01]`, `[00001]`, `(05)`) and explicit season/episode/special brackets.
+    private static func stripNonEpisodeBrackets(from text: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"\[[^\[\]]*\]|\([^\(\)]*\)"#) else {
+            return text
+        }
+
+        var result = text
+        for _ in 0..<3 {
+            let nsText = result as NSString
+            let matches = regex.matches(in: result, range: NSRange(location: 0, length: nsText.length))
+            guard !matches.isEmpty else { break }
+
+            var changed = false
+            for match in matches.reversed() {
+                guard let range = Range(match.range, in: result) else { continue }
+                let block = String(result[range])
+                let inner = String(block.dropFirst().dropLast()).trimmingCharacters(in: .whitespacesAndNewlines)
+
+                if shouldPreserveBracketContent(inner) {
+                    continue
+                }
+                result.replaceSubrange(range, with: " ")
+                changed = true
+            }
+            if !changed { break }
+        }
+        return result
+    }
+
+    private static func shouldPreserveBracketContent(_ inner: String) -> Bool {
+        guard !inner.isEmpty else { return false }
+        // Never preserve 8-hex CRC32 tags even if all-digit (e.g. [11223344])
+        if firstMatch(#"^[0-9A-Fa-f]{8}$"#, in: inner) != nil {
+            return false
+        }
+        // Preserve pure numeric brackets like [01], (05), [00001], [12.5]
+        if firstMatch(#"^0*\d{1,4}(?:\.\d)?$"#, in: inner) != nil, parseEpisodeNumber(inner) != nil {
+            return true
+        }
+        // Preserve explicit S##E##, 1x##, Season ##, EP##, Episode ##, or special labels
+        if firstMatch(#"(?i)\bS\d{1,2}\s*[\.\-_]?\s*E0*\d{1,4}(?:\.\d)?\b"#, in: inner) != nil { return true }
+        if firstMatch(#"(?i)\b\d{1,2}x0*\d{1,4}(?:\.\d)?\b"#, in: inner) != nil { return true }
+        if firstMatch(#"(?i)\bSeason[\s\.\-_]*\d{1,2}\b"#, in: inner) != nil { return true }
+        if firstMatch(#"(?i)^S\d{1,2}$"#, in: inner) != nil { return true }
+        if firstMatch(#"(?i)^(?:Episode|Ep\.?|E)[\s\.\-_#]*0*\d{1,4}(?:\.\d)?$"#, in: inner) != nil { return true }
+        if firstMatch(#"(?i)^(OVA|OAD|SP|Special|NCOP|NCED|Movie|Film)(?:[\s\.\-_#]*0*\d{1,4}(?:\.\d)?)?$"#, in: inner) != nil { return true }
+        return false
+    }
+
     /// Extracts an explicit season number if present (`S01E05`, `1x05`, `Season 2`, `S02`).
     public static func extractSeason(from filename: String) -> Int? {
         let cleaned = sanitizeFilename(filename)
 
-        if let m = firstMatch(#"(?i)\bS(\d{1,2})\s*[\.\-_]?\s*E\d{1,3}(?:\.\d)?\b"#, in: cleaned),
+        if let m = firstMatch(#"(?i)\bS(\d{1,2})\s*[\.\-_]?\s*E0*\d{1,4}(?:\.\d)?(?!\d)"#, in: cleaned),
            let s = Int(m[1]) {
             return s
         }
-        if let m = firstMatch(#"(?i)\b(\d{1,2})x\d{1,3}(?:\.\d)?\b"#, in: cleaned),
+        if let m = firstMatch(#"(?i)\b(\d{1,2})x0*\d{1,4}(?:\.\d)?(?!\d)"#, in: cleaned),
            let s = Int(m[1]) {
             return s
         }
@@ -212,64 +303,86 @@ public enum EpisodePairing {
     }
 
     /// Extracts normalized `(season, episode, specialTag)` from a media or subtitle filename.
-    /// Leading zeroes and version suffixes (`005` -> `5`, `01v2` -> `1`, `01.5` -> `1.5`) are normalized automatically.
+    /// Arbitrarily zero-padded BDMV numbers (`00001` -> `1`), leading zeroes (`005` -> `5`),
+    /// version suffixes (`01v2` -> `1`), and fractional specials (`01.5` -> `1.5`) are normalized automatically.
     public static func extractEpisodeKey(from filename: String) -> EpisodeKey? {
         let cleaned = sanitizeFilename(filename)
 
-        // 1. S##E## priority (e.g. S01E05, S1E5, S01E005, S01E12.5, S01.E05)
-        if let m = firstMatch(#"(?i)\bS(\d{1,2})\s*[\.\-_]?\s*E(\d{1,3}(?:\.\d)?)\b"#, in: cleaned),
-           let s = Int(m[1]), let e = Double(m[2]) {
+        // 1. S##E## priority (e.g. S01E05, S1E5, S01E005, S01E00005, S01E12.5, S01.E05)
+        if let m = firstMatch(#"(?i)\bS(\d{1,2})\s*[\.\-_]?\s*E(0*\d{1,4}(?:\.\d)?)(?!\d)"#, in: cleaned),
+           let s = Int(m[1]), let e = parseEpisodeNumber(m[2]) {
             return EpisodeKey(season: s, episode: e)
         }
 
-        // 2. 1x05 / 02x12.5
-        if let m = firstMatch(#"(?i)\b(\d{1,2})x(\d{1,3}(?:\.\d)?)\b"#, in: cleaned),
-           let s = Int(m[1]), let e = Double(m[2]) {
+        // 2. 1x05 / 02x12.5 / 01x00005
+        if let m = firstMatch(#"(?i)\b(\d{1,2})x(0*\d{1,4}(?:\.\d)?)(?!\d)"#, in: cleaned),
+           let s = Int(m[1]), let e = parseEpisodeNumber(m[2]) {
             return EpisodeKey(season: s, episode: e)
         }
 
-        // Capture any standalone season token (e.g. "Season 2" or "S02") and strip it
-        // so standalone-number rules below never mistake "Season 2" for Episode 2.
+        // Capture any standalone season token (e.g. "Season 2" or "S02") and strip it before episode lookup
+        // so season digits never get mistaken for episode numbers.
         let explicitSeason = extractSeason(from: filename)
         var epSearchText = cleaned
         epSearchText = replaceRegex(#"(?i)\bSeason[\s\.\-_]*\d{1,2}\b"#, in: epSearchText, with: " ")
         epSearchText = replaceRegex(#"(?i)(?:^|[\s\.\-_(\[])S\d{1,2}(?=$|[\s\.\-_)\]])"#, in: epSearchText, with: " ")
 
         // 3. Numbered Specials / OVA / OAD / SP / Special / NCOP / NCED
-        if let m = firstMatch(#"(?i)\b(OVA|OAD|SP|Special|NCOP|NCED)[\s\.\-_#]*(\d{1,2}(?:\.\d)?)\b"#, in: epSearchText),
-           let e = Double(m[2]) {
-            let tag = m[1].uppercased() == "SPECIAL" ? "SP" : m[1].uppercased()
-            return EpisodeKey(season: explicitSeason, episode: e, specialTag: tag)
+        for m in allMatches(#"(?i)\b(OVA|OAD|SP|Special|NCOP|NCED)[\s\.\-_#]*(0*\d{1,4}(?:\.\d)?)(?!\d)"#, in: epSearchText) {
+            if let e = parseEpisodeNumber(m[2]) {
+                let tag = m[1].uppercased() == "SPECIAL" ? "SP" : m[1].uppercased()
+                return EpisodeKey(season: explicitSeason, episode: e, specialTag: tag)
+            }
         }
 
-        // 4. Explicit episode prefix: Episode 5 / Ep.05 / EP05 / E05
-        if let m = firstMatch(#"(?i)\b(?:Episode|Ep\.?|E)[\s\.\-_#]*(\d{1,3}(?:\.\d)?)\b"#, in: epSearchText),
-           let e = Double(m[1]) {
+        // 4. Explicit episode prefix: Episode 5 / Ep.05 / EP00005 / E05
+        for m in allMatches(#"(?i)\b(?:Episode|Ep\.?|E)[\s\.\-_#]*(0*\d{1,4}(?:\.\d)?)(?!\d)"#, in: epSearchText) {
+            if let e = parseEpisodeNumber(m[1]) {
+                return EpisodeKey(season: explicitSeason, episode: e)
+            }
+        }
+
+        // 5. Fansub dash pattern: " - 05 " / " - 00001 " / " - 01.5 " / " - 05 ["
+        for m in allMatches(#"(?:\s+-\s+|\s+–\s+)(0*\d{1,4}(?:\.\d)?)(?=$|[\s\[\(\-_\.,+])"#, in: epSearchText) {
+            if let e = parseEpisodeNumber(m[1]) {
+                return EpisodeKey(season: explicitSeason, episode: e)
+            }
+        }
+
+        // 6. Bracketed episode number: [05] / (05) / [00001]
+        for m in allMatches(#"[\[\(]\s*(0*\d{1,4}(?:\.\d)?)\s*[\]\)]"#, in: epSearchText) {
+            if let e = parseEpisodeNumber(m[1]) {
+                return EpisodeKey(season: explicitSeason, episode: e)
+            }
+        }
+
+        // 7. Hash or underscored episode number: #05 / _05_ / _00001_
+        for m in allMatches(#"(?:#|_)(0*\d{1,4}(?:\.\d)?)(?=$|[\s_\.\-\+\[\(\)])"#, in: epSearchText) {
+            if let e = parseEpisodeNumber(m[1]) {
+                return EpisodeKey(season: explicitSeason, episode: e)
+            }
+        }
+
+        // 8. Trailing standalone episode number or bare number (e.g. "00001", "01", "Show Name 05", "Show.Name.5")
+        if let m = firstMatch(#"(?:^|[\s\.\-_])(0*\d{1,4}(?:\.\d)?)\s*$"#, in: epSearchText),
+           let e = parseEpisodeNumber(m[1]) {
             return EpisodeKey(season: explicitSeason, episode: e)
         }
 
-        // 5. Fansub dash pattern: " - 05 " / " - 5 " / " - 01.5 " / " - 05 ["
-        if let m = firstMatch(#"(?:\s+-\s+|\s+–\s+)(\d{1,3}(?:\.\d)?)(?=\s|$|[\[\(\-_\.])"#, in: epSearchText),
-           let e = Double(m[1]) {
-            return EpisodeKey(season: explicitSeason, episode: e)
+        // 9. Standalone-number fallback (e.g. "00001 complete++", "01_final", "0012 (rev2)" after stripping group/meta brackets)
+        let standaloneCandidates = allMatches(
+            #"(?<![A-Za-z0-9])(0*\d{1,4}(?:\.\d)?)(?![A-Za-z0-9])"#,
+            in: epSearchText
+        ).compactMap { captures -> (raw: String, value: Double, zeroPadded: Bool)? in
+            guard captures.count > 1 else { return nil }
+            let raw = captures[1]
+            guard let value = parseEpisodeNumber(raw) else { return nil }
+            let intPart = raw.split(separator: ".").first.map(String.init) ?? raw
+            let zeroPadded = intPart.count > 1 && intPart.hasPrefix("0")
+            return (raw, value, zeroPadded)
         }
-
-        // 6. Bracketed episode number: [05] or (05)
-        if let m = firstMatch(#"[\[\(](\d{1,3}(?:\.\d)?)[\]\)]"#, in: epSearchText),
-           let e = Double(m[1]) {
-            return EpisodeKey(season: explicitSeason, episode: e)
-        }
-
-        // 7. Hash or underscored episode number: #05 or _05_
-        if let m = firstMatch(#"(?:#|_)(\d{1,3}(?:\.\d)?)(?=\b|_|\s|$)"#, in: epSearchText),
-           let e = Double(m[1]) {
-            return EpisodeKey(season: explicitSeason, episode: e)
-        }
-
-        // 8. Trailing standalone episode number at end of cleaned title (e.g. "Show Name 05" or "Show.Name.5")
-        if let m = firstMatch(#"(?:^|[\s\.\-_])(\d{1,3}(?:\.\d)?)\s*$"#, in: epSearchText),
-           let e = Double(m[1]), e < 1900 {
-            return EpisodeKey(season: explicitSeason, episode: e)
+        if let preferred = standaloneCandidates.first(where: \.zeroPadded) ?? standaloneCandidates.first {
+            return EpisodeKey(season: explicitSeason, episode: preferred.value)
         }
 
         return nil
@@ -279,10 +392,8 @@ public enum EpisodePairing {
     /// used for tie-breaking and Tier 3 conservative special matching.
     public static func normalizedTitleTokens(from filename: String) -> Set<String> {
         var text = sanitizeFilename(filename)
-        // Strip leading release-group bracket e.g. `[SubsPlease]` or `(Group)`
-        text = replaceRegex(#"^\s*[\[\(][^\]\)]+[\]\)]\s*"#, in: text, with: " ")
         // Strip explicit season/episode tags so title comparison focuses on title + special words
-        text = replaceRegex(#"(?i)\bS\d{1,2}\s*[\.\-_]?\s*E\d{1,3}(?:\.\d)?\b"#, in: text, with: " ")
+        text = replaceRegex(#"(?i)\bS\d{1,2}\s*[\.\-_]?\s*E0*\d{1,4}(?:\.\d)?\b"#, in: text, with: " ")
         text = replaceRegex(#"(?i)\bSeason[\s\.\-_]*\d{1,2}\b"#, in: text, with: " ")
         text = replaceRegex(#"(?i)(?:^|[\s\.\-_])S\d{1,2}(?=$|[\s\.\-_])"#, in: text, with: " ")
 
@@ -750,6 +861,18 @@ public enum EpisodePairing {
             let r = match.range(at: idx)
             guard r.location != NSNotFound, let swiftRange = Range(r, in: text) else { return "" }
             return String(text[swiftRange])
+        }
+    }
+
+    private static func allMatches(_ pattern: String, in text: String) -> [[String]] {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return [] }
+        let range = NSRange(text.startIndex..<text.endIndex, in: text)
+        return regex.matches(in: text, range: range).map { match in
+            (0..<match.numberOfRanges).map { idx in
+                let r = match.range(at: idx)
+                guard r.location != NSNotFound, let swiftRange = Range(r, in: text) else { return "" }
+                return String(text[swiftRange])
+            }
         }
     }
 

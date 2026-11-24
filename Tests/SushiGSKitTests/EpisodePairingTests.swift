@@ -400,4 +400,179 @@ struct EpisodePairingTests {
         #expect(sourceAndSubs[0].externalSubtitleFile?.lastPathComponent == "Show - 001.ass")
         #expect(sourceAndSubs[0].isVerified == false)
     }
+
+    @Test("Real-world BDMV + fansub 3-way pairing: [Moozzi2] - 01 pairs with [Stardust] 00001 and 00001 complete++ as Episode 1 (Unverified)")
+    func realWorldBDMVThreeWayPairing() {
+        let sources = [
+            URL(fileURLWithPath: "/src/[Moozzi2] Mahou no Angel Sweet Mint - 01 (BD Remux 1080p).mkv"),
+        ]
+        let targets = [
+            URL(fileURLWithPath: "/dst/[Stardust] 00001.mkv"),
+        ]
+        let subs = [
+            URL(fileURLWithPath: "/sub/[Stardust] 00001 complete++.ass"),
+        ]
+
+        let paired = EpisodePairing.pairFiles(
+            sources: sources,
+            targets: targets,
+            externalSubtitles: subs,
+            subtitleMode: .external
+        )
+
+        #expect(paired.count == 1)
+        let row = paired[0]
+        #expect(row.episodeKey == EpisodeKey(season: nil, episode: 1.0, specialTag: nil))
+        #expect(row.episodeKey?.displayBadge == "EP 01")
+        #expect(row.sourceFile?.lastPathComponent == "[Moozzi2] Mahou no Angel Sweet Mint - 01 (BD Remux 1080p).mkv")
+        #expect(row.targetFile?.lastPathComponent == "[Stardust] 00001.mkv")
+        #expect(row.externalSubtitleFile?.lastPathComponent == "[Stardust] 00001 complete++.ass")
+        #expect(row.matchKind == .episodeRegex)
+        #expect(row.isVerified == false)
+    }
+
+    @Test("Multi-episode BDMV batch (01..03 <-> 00001..00003) pairs cleanly while mismatched 00004 and NCOP stay unmatched")
+    func multiEpisodeBDMVBatchAndUnmatchedSafety() {
+        let sources = [
+            URL(fileURLWithPath: "/src/[Moozzi2] Mahou no Angel Sweet Mint - 01 (BD Remux 1080p).mkv"),
+            URL(fileURLWithPath: "/src/[Moozzi2] Mahou no Angel Sweet Mint - 02 (BD Remux 1080p).mkv"),
+            URL(fileURLWithPath: "/src/[Moozzi2] Mahou no Angel Sweet Mint - 03 (BD Remux 1080p).mkv"),
+            URL(fileURLWithPath: "/src/[Moozzi2] Mahou no Angel Sweet Mint - NCOP (BD Remux 1080p).mkv"),
+        ]
+        let targets = [
+            URL(fileURLWithPath: "/dst/[Stardust] 00001.mkv"),
+            URL(fileURLWithPath: "/dst/[Stardust] 00002.mkv"),
+            URL(fileURLWithPath: "/dst/[Stardust] 00003.mkv"),
+            URL(fileURLWithPath: "/dst/[Stardust] 00004.mkv"),
+        ]
+        let subs = [
+            URL(fileURLWithPath: "/sub/[Stardust] 00003 complete++.ass"),
+            URL(fileURLWithPath: "/sub/[Stardust] 00001 complete++.ass"),
+            URL(fileURLWithPath: "/sub/[Stardust] 00002 complete++.ass"),
+        ]
+
+        let paired = EpisodePairing.pairFiles(
+            sources: sources,
+            targets: targets,
+            externalSubtitles: subs,
+            subtitleMode: .external
+        )
+
+        // 3 complete 3-way matches + 1 unmatched target (00004) + 1 unmatched source (NCOP) = 5 rows
+        #expect(paired.count == 5)
+
+        let completeRows = paired.filter { $0.sourceFile != nil && $0.targetFile != nil && $0.externalSubtitleFile != nil }
+        #expect(completeRows.count == 3)
+        #expect(completeRows.map(\.episodeKey?.episode) == [1.0, 2.0, 3.0])
+        #expect(completeRows.allSatisfy { $0.matchKind == .episodeRegex && !$0.isVerified })
+        #expect(completeRows[0].targetFile?.lastPathComponent == "[Stardust] 00001.mkv")
+        #expect(completeRows[1].targetFile?.lastPathComponent == "[Stardust] 00002.mkv")
+        #expect(completeRows[2].targetFile?.lastPathComponent == "[Stardust] 00003.mkv")
+        #expect(completeRows[0].externalSubtitleFile?.lastPathComponent == "[Stardust] 00001 complete++.ass")
+        #expect(completeRows[1].externalSubtitleFile?.lastPathComponent == "[Stardust] 00002 complete++.ass")
+        #expect(completeRows[2].externalSubtitleFile?.lastPathComponent == "[Stardust] 00003 complete++.ass")
+
+        // Episode 00004 target and NCOP source must NOT cross-match
+        let ep4Row = paired.first { $0.targetFile?.lastPathComponent == "[Stardust] 00004.mkv" }
+        #expect(ep4Row?.sourceFile == nil)
+        #expect(ep4Row?.externalSubtitleFile == nil)
+        #expect(ep4Row?.matchKind == .unmatched)
+
+        let ncopRow = paired.first { $0.sourceFile?.lastPathComponent.contains("NCOP") == true }
+        #expect(ncopRow?.targetFile == nil)
+        #expect(ncopRow?.externalSubtitleFile == nil)
+        #expect(ncopRow?.matchKind == .unmatched)
+    }
+
+    @Test(
+        "Extracts arbitrarily zero-padded BDMV numbers, bare numbers, and standalone numbers with trailing suffixes",
+        arguments: [
+            ("[Moozzi2] Mahou no Angel Sweet Mint - 01 (BD Remux 1080p).mkv", nil as Int?, 1.0),
+            ("[Stardust] 00001 complete++.ass", nil, 1.0),
+            ("[Stardust] 00001.mkv", nil, 1.0),
+            ("00001.mkv", nil, 1.0),
+            ("000001.mkv", nil, 1.0),
+            ("01.ass", nil, 1.0),
+            ("01_final.ass", nil, 1.0),
+            ("0012 (rev2).mkv", nil, 12.0),
+            ("[Group] 00012 complete++.ass", nil, 12.0),
+            ("[Group] 00005v2 complete++.ass", nil, 5.0),
+            ("[Group] [00007] (BD Remux 1080p).mkv", nil, 7.0),
+            ("Show S01E00012.mkv", 1, 12.0),
+        ]
+    )
+    func extractsBDMVAndStandaloneNumbers(filename: String, expectedSeason: Int?, expectedEpisode: Double) throws {
+        let key = try #require(EpisodePairing.extractEpisodeKey(from: filename))
+        #expect(key.season == expectedSeason)
+        #expect(key.episode == expectedEpisode)
+    }
+
+    @Test("Pairs bare numbered BDMV files and leading-number-with-suffix subtitles against structured episode titles")
+    func pairsBareNumberedAndLeadingSuffixFiles() {
+        let sources = [
+            URL(fileURLWithPath: "/src/Show - 1.mkv"),
+            URL(fileURLWithPath: "/src/Show S01E12.mkv"),
+        ]
+        let targets = [
+            URL(fileURLWithPath: "/dst/00001.mkv"),
+            URL(fileURLWithPath: "/dst/0012 (rev2).mkv"),
+        ]
+        let subs = [
+            URL(fileURLWithPath: "/sub/01_final.ass"),
+            URL(fileURLWithPath: "/sub/[Group] 00012 complete++.ass"),
+        ]
+
+        let paired = EpisodePairing.pairFiles(
+            sources: sources,
+            targets: targets,
+            externalSubtitles: subs,
+            subtitleMode: .external
+        )
+
+        #expect(paired.count == 2)
+        let ep1 = paired.first { $0.sourceFile?.lastPathComponent == "Show - 1.mkv" }
+        #expect(ep1?.targetFile?.lastPathComponent == "00001.mkv")
+        #expect(ep1?.externalSubtitleFile?.lastPathComponent == "01_final.ass")
+        #expect(ep1?.matchKind == .episodeRegex)
+        #expect(ep1?.isVerified == false)
+
+        let ep12 = paired.first { $0.sourceFile?.lastPathComponent == "Show S01E12.mkv" }
+        #expect(ep12?.targetFile?.lastPathComponent == "0012 (rev2).mkv")
+        #expect(ep12?.externalSubtitleFile?.lastPathComponent == "[Group] 00012 complete++.ass")
+        #expect(ep12?.matchKind == .episodeRegex)
+        #expect(ep12?.isVerified == false)
+    }
+
+    @Test("Ignores digits inside release-group brackets, technical metadata, unpadded 4-digit years, and multi-digit dates/IDs")
+    func ignoresGroupDigitsYearsAndDates() {
+        let nonEpisodeFilenames = [
+            "[Moozzi2] Completely Unrelated Alpha.mkv",
+            "[Moozzi2] Show (BD Remux 1080p) [1080p FLAC] [A1B2C3D4].mkv",
+            "[Group3] Show (DVD 2) (1990).mkv",
+            "Show 1998.mkv",
+            "Show (2024).mkv",
+            "Show.20240512.mkv",
+            "Show_Name_1080p_x265_10bit_5.1.mkv",
+        ]
+
+        for name in nonEpisodeFilenames {
+            #expect(EpisodePairing.extractEpisodeKey(from: name) == nil, "Expected nil episode key for \(name)")
+        }
+
+        // `[Moozzi2]` must never falsely pair with Episode 2
+        let paired = EpisodePairing.pairFiles(
+            sources: [URL(fileURLWithPath: "/src/[Moozzi2] Completely Unrelated Alpha.mkv")],
+            targets: [URL(fileURLWithPath: "/dst/Show - 02.mkv")]
+        )
+        #expect(paired.count == 2)
+        #expect(paired.allSatisfy { $0.matchKind == .unmatched && ($0.sourceFile == nil || $0.targetFile == nil) })
+
+        // Strict season mismatch still blocks zero-padded BDMV numbers when explicit seasons disagree
+        let seasonConflict = EpisodePairing.pairFiles(
+            sources: [URL(fileURLWithPath: "/src/Show.S01E00001.mkv")],
+            targets: [URL(fileURLWithPath: "/dst/Show.S02E00001.mkv")]
+        )
+        #expect(seasonConflict.count == 2)
+        #expect(seasonConflict.allSatisfy { $0.matchKind == .unmatched })
+    }
 }
