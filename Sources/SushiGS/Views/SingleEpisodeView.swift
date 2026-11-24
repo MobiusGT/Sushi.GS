@@ -265,6 +265,7 @@ struct SingleEpisodeView: View {
                 model.revealInFinder(path)
             }
             .controlSize(.small)
+            .hoverDescription("Reveal this output file in Finder")
         }
         .padding(.vertical, Space.xs)
         .contextMenu {

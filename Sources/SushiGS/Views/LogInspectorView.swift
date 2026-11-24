@@ -43,6 +43,7 @@ struct LogInspectorView: View {
                 }
                 .labelsHidden()
                 .pickerStyle(.segmented)
+                .hoverDescription("Switch between logs for the selected episode and the combined global log")
 
                 HStack(spacing: Space.xs) {
                     ForEach(LogFilter.allCases) { filter in
@@ -76,6 +77,7 @@ struct LogInspectorView: View {
                         .labelStyle(.iconOnly)
                         .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
+                        .hoverDescription("Clear log filter text")
                     }
                 }
                 .padding(.horizontal, Space.sm)
@@ -116,6 +118,11 @@ struct LogInspectorView: View {
                         }
                         .padding(Space.sm)
                     }
+                    .onAppear {
+                        if let id = model.highlightedLogID {
+                            proxy.scrollTo(id, anchor: .center)
+                        }
+                    }
                     .onChange(of: model.highlightedLogID) { _, newID in
                         guard let newID else { return }
                         proxy.scrollTo(newID, anchor: .center)
@@ -133,6 +140,12 @@ struct LogInspectorView: View {
         case .errors: errors > 0 ? "Errors (\(errors))" : "Errors"
         }
 
+        let helpText: String = switch filter {
+        case .all: "Show all log lines"
+        case .warnings: "Show only warning log lines"
+        case .errors: "Show only error log lines"
+        }
+
         return Button(title) {
             model.logFilter = filter
         }
@@ -145,6 +158,7 @@ struct LogInspectorView: View {
             selected ? Palette.accent : Surfaces.card,
             in: Capsule()
         )
+        .hoverDescription(helpText)
     }
 }
 

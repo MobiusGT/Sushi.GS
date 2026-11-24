@@ -144,12 +144,14 @@ struct DependenciesView: View {
                     }
                     .controlSize(.small)
                     .disabled(deps.installLogs.isEmpty)
+                    .hoverDescription("Copy installer output to the clipboard")
 
                     Button("Clear") {
                         deps.clearLogs()
                     }
                     .controlSize(.small)
                     .disabled(deps.installLogs.isEmpty)
+                    .hoverDescription("Clear the installer log")
                 }
 
                 if deps.installLogs.isEmpty {
@@ -286,6 +288,7 @@ private struct DependencyRowView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
             .disabled(deps.isBusy)
+            .hoverDescription("Update \(record.id.displayName) to the latest version")
         case .installed:
             if record.id == .sushiBatch {
                 Button("Check / Update") {
@@ -293,12 +296,14 @@ private struct DependencyRowView: View {
                 }
                 .controlSize(.small)
                 .disabled(deps.isBusy)
+                .hoverDescription("Check PyPI or GitHub and update sushi-batch & sushi-sub-next")
             } else {
                 Button("Reinstall") {
                     Task { await deps.installOrUpdate(record.id, config: model.config, reinstall: true) }
                 }
                 .controlSize(.small)
                 .disabled(deps.isBusy)
+                .hoverDescription("Reinstall \(record.id.displayName)")
             }
         case .missing, .failed, .checking:
             if record.id == .aegisubCLI {
@@ -307,12 +312,14 @@ private struct DependencyRowView: View {
                 }
                 .controlSize(.small)
                 .disabled(deps.isBusy)
+                .hoverDescription("Show instructions to build or select aegisub-cli on Apple Silicon")
             } else {
                 Button("Install") {
                     Task { await deps.installOrUpdate(record.id, config: model.config) }
                 }
                 .controlSize(.small)
                 .disabled(deps.isBusy)
+                .hoverDescription("Install \(record.id.displayName) into Application Support")
             }
         }
     }

@@ -130,7 +130,7 @@ final class AppModel {
         didSet { syncMenuState() }
     }
     var settingsTab: SettingsTab = .general
-    var showInspector = true
+    var showInspector = false
 
     // Inspector state
     var logScope: LogScope = .selectedJob
@@ -187,18 +187,19 @@ final class AppModel {
     var manualSubRule = BatchTrackRule()
     var showClearManualBatchConfirmation = false
 
-    // Lightweight Native File Browser state (Manual Batch Column 1)
-    var manualBrowserRootURL: URL?
+    // Lightweight Native File Browser state (Manual Batch inverted-L browser)
+    var manualBrowserHistory = FileBrowserHistory()
+    var manualBrowserRootURL: URL? { manualBrowserHistory.current }
     var manualBrowserFilter: FileBrowserFilter = .all
     var manualBrowserSearch: String = ""
     var manualBrowserExpandedPaths: Set<String> = []
-    var manualBrowserSelectedPaths: Set<String> = []
-    var manualBrowserAnchorPath: String?
+    var manualBrowserSelection = FileBrowserSelectionState()
     var manualBrowserDirectoryCache: [String: [FileBrowserEntry]] = [:]
     var isSeededSyntheticBrowser = false
 
     // Shared media probe cache by file path so Manual Batch reorders resolve tracks immediately
     @ObservationIgnored private var probeCache: [String: MediaProbeResult] = [:]
+    @ObservationIgnored private var manualProbeTask: Task<Void, Never>?
 
     // Queue runner state
     private(set) var isRunning = false {
@@ -1063,25 +1064,51 @@ final class AppModel {
     }
 
     func setManualBrowserRoot(_ url: URL) {
-        var resolved = url
-        var isDir: ObjCBool = false
-        if FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), !isDir.boolValue {
-            resolved = url.deletingLastPathComponent()
+        var resolved = url.standardizedFileURL
+        if !isSeededSyntheticBrowser {
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: resolved.path, isDirectory: &isDir), !isDir.boolValue {
+                resolved = resolved.deletingLastPathComponent()
+            }
         }
-        isSeededSyntheticBrowser = false
-        manualBrowserRootURL = resolved
+        let staysSynthetic = isSeededSyntheticBrowser && manualBrowserDirectoryCache[resolved.path] != nil
+        if !staysSynthetic {
+            isSeededSyntheticBrowser = false
+            manualBrowserDirectoryCache.removeAll()
+        }
+        manualBrowserHistory.navigate(to: resolved)
         manualBrowserExpandedPaths.removeAll()
-        manualBrowserSelectedPaths.removeAll()
-        manualBrowserAnchorPath = nil
-        manualBrowserDirectoryCache.removeAll()
-        refreshManualBrowserDirectory(resolved)
+        manualBrowserSelection.clear()
+        if !staysSynthetic {
+            refreshManualBrowserDirectory(resolved)
+        }
+    }
+
+    func navigateManualBrowserBack() {
+        guard let target = manualBrowserHistory.goBack() else { return }
+        manualBrowserExpandedPaths.removeAll()
+        manualBrowserSelection.clear()
+        if !isSeededSyntheticBrowser {
+            refreshManualBrowserDirectory(target)
+        }
+    }
+
+    func navigateManualBrowserForward() {
+        guard let target = manualBrowserHistory.goForward() else { return }
+        manualBrowserExpandedPaths.removeAll()
+        manualBrowserSelection.clear()
+        if !isSeededSyntheticBrowser {
+            refreshManualBrowserDirectory(target)
+        }
     }
 
     func navigateManualBrowserUp() {
-        guard let current = manualBrowserRootURL else { return }
-        let parent = current.deletingLastPathComponent()
-        guard parent.path != current.path else { return }
-        setManualBrowserRoot(parent)
+        guard let target = manualBrowserHistory.goUp() else { return }
+        manualBrowserExpandedPaths.removeAll()
+        manualBrowserSelection.clear()
+        if !isSeededSyntheticBrowser {
+            refreshManualBrowserDirectory(target)
+        }
     }
 
     func refreshManualBrowser() {
@@ -1441,7 +1468,13 @@ final class AppModel {
             selectedManualRowIndex = nextJobs.isEmpty ? nil : nextJobs.count - 1
         }
         syncMenuState()
-        Task { await probeAllManualJobs() }
+        // Defer ffprobe inspection asynchronously past the drop frame so drag/reorder stays 120 fps.
+        manualProbeTask?.cancel()
+        manualProbeTask = Task { [weak self] in
+            await Task.yield()
+            guard !Task.isCancelled, let self else { return }
+            await self.probeAllManualJobs()
+        }
     }
 
     private func manualJobKey(src: URL?, dst: URL?, sub: URL?, mode: BatchSubtitleMode) -> String {

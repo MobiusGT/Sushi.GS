@@ -183,43 +183,53 @@ enum SeedData {
         sampleLogs: [LogEntry] = [],
         sampleWarnings: [SyncWarning] = []
     ) {
+        let mediaParent = URL(fileURLWithPath: "/Media")
         let root = URL(fileURLWithPath: "/Media/Sample_Series")
         let srcDir = URL(fileURLWithPath: "/Media/Sample_Series/WEB_Source")
         let subDir = URL(fileURLWithPath: "/Media/Sample_Series/Subtitles_ASS")
         let dstDir = URL(fileURLWithPath: "/Media/Sample_Series/BluRay_Target")
 
         model.isSeededSyntheticBrowser = true
-        model.manualBrowserRootURL = root
+        model.manualBrowserHistory = FileBrowserHistory(current: root, backStack: [mediaParent])
         model.manualBrowserFilter = .all
         model.manualBrowserSearch = ""
         model.manualBrowserExpandedPaths = [srcDir.path, subDir.path]
-        model.manualBrowserSelectedPaths = [srcDir.appendingPathComponent("Episode_03_WEB.mkv").path]
+        let selectedEntry = FileBrowserEntry(
+            url: srcDir.appendingPathComponent("Episode_03_WEB.mkv"),
+            isDirectory: false,
+            fileSizeBytes: 1_480_000_000
+        )
+        model.manualBrowserSelection = FileBrowserSelectionState()
+        model.manualBrowserSelection.plainClick(selectedEntry)
         model.manualBrowserDirectoryCache = [
+            mediaParent.path: [
+                FileBrowserEntry(url: root, isDirectory: true),
+            ],
             root.path: [
                 FileBrowserEntry(url: dstDir, isDirectory: true),
                 FileBrowserEntry(url: subDir, isDirectory: true),
                 FileBrowserEntry(url: srcDir, isDirectory: true),
-                FileBrowserEntry(url: root.appendingPathComponent("Bonus_OVA_WEB.mkv"), isDirectory: false),
+                FileBrowserEntry(url: root.appendingPathComponent("Bonus_OVA_WEB.mkv"), isDirectory: false, fileSizeBytes: 892_000_000),
             ],
             srcDir.path: [
-                FileBrowserEntry(url: srcDir.appendingPathComponent("Episode_01_WEB.mkv"), isDirectory: false),
-                FileBrowserEntry(url: srcDir.appendingPathComponent("Episode_02_WEB.mkv"), isDirectory: false),
-                FileBrowserEntry(url: srcDir.appendingPathComponent("Episode_03_WEB.mkv"), isDirectory: false),
-                FileBrowserEntry(url: srcDir.appendingPathComponent("Episode_04_WEB.mkv"), isDirectory: false),
-                FileBrowserEntry(url: srcDir.appendingPathComponent("Episode_05_WEB.mkv"), isDirectory: false),
+                FileBrowserEntry(url: srcDir.appendingPathComponent("Episode_01_WEB.mkv"), isDirectory: false, fileSizeBytes: 1_410_000_000),
+                FileBrowserEntry(url: srcDir.appendingPathComponent("Episode_02_WEB.mkv"), isDirectory: false, fileSizeBytes: 1_450_000_000),
+                selectedEntry,
+                FileBrowserEntry(url: srcDir.appendingPathComponent("Episode_04_WEB.mkv"), isDirectory: false, fileSizeBytes: 1_390_000_000),
+                FileBrowserEntry(url: srcDir.appendingPathComponent("Episode_05_WEB.mkv"), isDirectory: false, fileSizeBytes: 1_420_000_000),
             ],
             subDir.path: [
-                FileBrowserEntry(url: subDir.appendingPathComponent("Ep01_EN.ass"), isDirectory: false),
-                FileBrowserEntry(url: subDir.appendingPathComponent("Ep02_EN.ass"), isDirectory: false),
-                FileBrowserEntry(url: subDir.appendingPathComponent("Ep03_EN.ass"), isDirectory: false),
-                FileBrowserEntry(url: subDir.appendingPathComponent("Ep04_EN.ass"), isDirectory: false),
+                FileBrowserEntry(url: subDir.appendingPathComponent("Ep01_EN.ass"), isDirectory: false, fileSizeBytes: 64_200),
+                FileBrowserEntry(url: subDir.appendingPathComponent("Ep02_EN.ass"), isDirectory: false, fileSizeBytes: 68_500),
+                FileBrowserEntry(url: subDir.appendingPathComponent("Ep03_EN.ass"), isDirectory: false, fileSizeBytes: 71_100),
+                FileBrowserEntry(url: subDir.appendingPathComponent("Ep04_EN.ass"), isDirectory: false, fileSizeBytes: 62_800),
             ],
             dstDir.path: [
-                FileBrowserEntry(url: dstDir.appendingPathComponent("Sample.BD.01.1080p.FLAC.mkv"), isDirectory: false),
-                FileBrowserEntry(url: dstDir.appendingPathComponent("Sample.BD.02.1080p.FLAC.mkv"), isDirectory: false),
-                FileBrowserEntry(url: dstDir.appendingPathComponent("Sample.BD.03.1080p.FLAC.mkv"), isDirectory: false),
-                FileBrowserEntry(url: dstDir.appendingPathComponent("Sample.BD.04.1080p.FLAC.mkv"), isDirectory: false),
-                FileBrowserEntry(url: dstDir.appendingPathComponent("Sample.BD.05.1080p.FLAC.mkv"), isDirectory: false),
+                FileBrowserEntry(url: dstDir.appendingPathComponent("Sample.BD.01.1080p.FLAC.mkv"), isDirectory: false, fileSizeBytes: 5_210_000_000),
+                FileBrowserEntry(url: dstDir.appendingPathComponent("Sample.BD.02.1080p.FLAC.mkv"), isDirectory: false, fileSizeBytes: 5_180_000_000),
+                FileBrowserEntry(url: dstDir.appendingPathComponent("Sample.BD.03.1080p.FLAC.mkv"), isDirectory: false, fileSizeBytes: 5_340_000_000),
+                FileBrowserEntry(url: dstDir.appendingPathComponent("Sample.BD.04.1080p.FLAC.mkv"), isDirectory: false, fileSizeBytes: 5_090_000_000),
+                FileBrowserEntry(url: dstDir.appendingPathComponent("Sample.BD.05.1080p.FLAC.mkv"), isDirectory: false, fileSizeBytes: 5_150_000_000),
             ],
         ]
 

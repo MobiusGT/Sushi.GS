@@ -358,6 +358,30 @@ public struct ManualBatchColumns: Equatable, Hashable, Sendable {
 
 // MARK: - Lightweight Native File Browser Model
 
+public enum FileBrowserItemKind: String, Codable, Hashable, Sendable {
+    case media
+    case subtitle
+    case folder
+    case other
+
+    /// True for file types that participate in type-locked multi-selection and drag-compatibility gating.
+    public var isSelectableFileType: Bool {
+        self == .media || self == .subtitle
+    }
+
+    /// True when dragging items of this kind is valid for the given Manual Batch pairing column.
+    public func acceptsColumn(_ column: ManualBatchColumnKind) -> Bool {
+        switch (self, column) {
+        case (.media, .sourceVideo), (.media, .targetVideo):
+            true
+        case (.subtitle, .sourceSubtitle):
+            true
+        default:
+            false
+        }
+    }
+}
+
 public enum FileBrowserFilter: String, Codable, CaseIterable, Hashable, Sendable, Identifiable {
     case all
     case video
@@ -381,21 +405,273 @@ public struct FileBrowserEntry: Identifiable, Hashable, Sendable {
     public var isDirectory: Bool
     public var isMedia: Bool
     public var isSubtitle: Bool
+    public var kind: FileBrowserItemKind
+    public var fileSizeBytes: Int64?
 
-    public init(url: URL, isDirectory: Bool) {
+    public init(url: URL, isDirectory: Bool, fileSizeBytes: Int64? = nil) {
         self.url = url
         self.name = url.lastPathComponent
         self.isDirectory = isDirectory
         let ext = url.pathExtension.lowercased()
-        self.isMedia = !isDirectory && EpisodePairing.mediaExtensions.contains(ext)
-        self.isSubtitle = !isDirectory && EpisodePairing.subtitleExtensions.contains(ext)
+        let media = !isDirectory && EpisodePairing.mediaExtensions.contains(ext)
+        let sub = !isDirectory && EpisodePairing.subtitleExtensions.contains(ext)
+        self.isMedia = media
+        self.isSubtitle = sub
+        if isDirectory {
+            self.kind = .folder
+        } else if media {
+            self.kind = .media
+        } else if sub {
+            self.kind = .subtitle
+        } else {
+            self.kind = .other
+        }
+        self.fileSizeBytes = isDirectory ? nil : fileSizeBytes
     }
 
     public var symbolName: String {
-        if isDirectory { return "folder.fill" }
-        if isSubtitle { return "captions.bubble" }
-        if isMedia { return "film" }
-        return "doc"
+        switch kind {
+        case .folder: "folder.fill"
+        case .subtitle: "captions.bubble"
+        case .media: "film"
+        case .other: "doc"
+        }
+    }
+
+    /// Compact file size (e.g. "1.4 GB", "48 KB") or file extension hint (e.g. "MKV", "ASS").
+    public var subtleDetailHint: String? {
+        if isDirectory { return nil }
+        if let bytes = fileSizeBytes, bytes > 0 {
+            return ByteCountFormatter.string(fromByteCount: bytes, countStyle: .file)
+        }
+        let ext = url.pathExtension.uppercased()
+        return ext.isEmpty ? nil : ext
+    }
+}
+
+/// Type-locked multi-selection state for the Manual Batch File Browser.
+/// Prevents accidental mixed-type (media + subtitle) selections across Shift-click, Command-click, and Command-A.
+public struct FileBrowserSelectionState: Equatable, Hashable, Sendable {
+    public var selectedPaths: Set<String>
+    public var anchorPath: String?
+    public var anchorKind: FileBrowserItemKind?
+
+    public init(
+        selectedPaths: Set<String> = [],
+        anchorPath: String? = nil,
+        anchorKind: FileBrowserItemKind? = nil
+    ) {
+        self.selectedPaths = selectedPaths
+        self.anchorPath = anchorPath
+        self.anchorKind = anchorKind
+    }
+
+    public var isEmpty: Bool { selectedPaths.isEmpty }
+
+    public mutating func clear() {
+        selectedPaths.removeAll()
+        anchorPath = nil
+        anchorKind = nil
+    }
+
+    /// Plain single-click replaces selection with `entry` and sets the anchor and its type lock.
+    public mutating func plainClick(_ entry: FileBrowserEntry) {
+        selectedPaths = [entry.id]
+        anchorPath = entry.id
+        anchorKind = entry.kind.isSelectableFileType ? entry.kind : nil
+    }
+
+    /// Shift-click selects the contiguous range from the anchor to `entry`, keeping ONLY items
+    /// matching the anchor's file kind (skipping opposite file types, folders, and unsupported files).
+    public mutating func shiftClick(_ entry: FileBrowserEntry, visibleEntries: [FileBrowserEntry]) {
+        guard let anchor = anchorPath,
+              let anchorIdx = visibleEntries.firstIndex(where: { $0.id == anchor }),
+              let clickIdx = visibleEntries.firstIndex(where: { $0.id == entry.id }) else {
+            plainClick(entry)
+            return
+        }
+
+        let targetKind: FileBrowserItemKind?
+        if let existingLock = anchorKind, existingLock.isSelectableFileType {
+            targetKind = existingLock
+        } else if entry.kind.isSelectableFileType {
+            targetKind = entry.kind
+            anchorKind = entry.kind
+        } else {
+            targetKind = nil
+        }
+
+        guard let locked = targetKind else {
+            plainClick(entry)
+            return
+        }
+
+        let lo = min(anchorIdx, clickIdx)
+        let hi = max(anchorIdx, clickIdx)
+        let matching = visibleEntries[lo...hi].filter { $0.kind == locked }
+        if matching.isEmpty {
+            return
+        }
+        selectedPaths = Set(matching.map(\.id))
+    }
+
+    /// Command-click toggles an item while enforcing the anchor's file kind when adding.
+    /// Opposite-type files (e.g., subtitles when anchor is media) are silently skipped.
+    public mutating func commandClick(_ entry: FileBrowserEntry) {
+        if selectedPaths.contains(entry.id) {
+            selectedPaths.remove(entry.id)
+            if selectedPaths.isEmpty {
+                anchorPath = nil
+                anchorKind = nil
+            } else if anchorPath == entry.id {
+                anchorPath = selectedPaths.sorted().first
+            }
+            return
+        }
+
+        if selectedPaths.isEmpty {
+            plainClick(entry)
+            return
+        }
+
+        if let locked = anchorKind, locked.isSelectableFileType {
+            guard entry.kind == locked else { return }
+            selectedPaths.insert(entry.id)
+        } else if entry.kind.isSelectableFileType {
+            // Previous selection was a folder or other item: switch cleanly to file selection.
+            plainClick(entry)
+        } else if entry.kind == .folder {
+            selectedPaths.insert(entry.id)
+        }
+    }
+
+    /// Command-A selects all visible files matching the existing anchor kind, or falls back to
+    /// the active filter (or media-first when filter is `.all`).
+    public mutating func selectAll(visibleEntries: [FileBrowserEntry], activeFilter: FileBrowserFilter) {
+        let resolvedKind: FileBrowserItemKind?
+        if !selectedPaths.isEmpty, let locked = anchorKind, locked.isSelectableFileType {
+            resolvedKind = locked
+        } else {
+            switch activeFilter {
+            case .video:
+                resolvedKind = .media
+            case .subtitles:
+                resolvedKind = .subtitle
+            case .all:
+                if visibleEntries.contains(where: { $0.kind == .media }) {
+                    resolvedKind = .media
+                } else if visibleEntries.contains(where: { $0.kind == .subtitle }) {
+                    resolvedKind = .subtitle
+                } else {
+                    resolvedKind = nil
+                }
+            }
+        }
+
+        guard let targetKind = resolvedKind else {
+            clear()
+            return
+        }
+
+        let matching = visibleEntries.filter { $0.kind == targetKind }
+        guard !matching.isEmpty else {
+            clear()
+            return
+        }
+        selectedPaths = Set(matching.map(\.id))
+        if let existingAnchor = anchorPath, selectedPaths.contains(existingAnchor) {
+            anchorPath = existingAnchor
+        } else {
+            anchorPath = matching.first?.id
+        }
+        anchorKind = targetKind
+    }
+
+    /// Resolves the drag kind (.media or .subtitle) for dragging `draggedEntry` (or the current selection if it contains `draggedEntry`).
+    public func dragPayload(for draggedEntry: FileBrowserEntry, visibleEntries: [FileBrowserEntry]) -> (urls: [URL], kind: FileBrowserItemKind?) {
+        if selectedPaths.contains(draggedEntry.id) {
+            let ordered = visibleEntries.filter { selectedPaths.contains($0.id) }
+            if !ordered.isEmpty {
+                let kind: FileBrowserItemKind?
+                if let locked = anchorKind, locked.isSelectableFileType {
+                    kind = locked
+                } else if ordered.allSatisfy({ $0.kind == .media }) {
+                    kind = .media
+                } else if ordered.allSatisfy({ $0.kind == .subtitle }) {
+                    kind = .subtitle
+                } else {
+                    kind = nil
+                }
+                return (ordered.map(\.url), kind)
+            }
+        }
+        return ([draggedEntry.url], draggedEntry.kind.isSelectableFileType ? draggedEntry.kind : nil)
+    }
+}
+
+/// Back / Forward / Parent-Up navigation history for the Manual Batch File Browser.
+public struct FileBrowserHistory: Equatable, Hashable, Sendable {
+    public private(set) var backStack: [URL]
+    public private(set) var forwardStack: [URL]
+    public private(set) var current: URL?
+
+    public init(current: URL? = nil, backStack: [URL] = [], forwardStack: [URL] = []) {
+        self.current = current?.standardizedFileURL
+        self.backStack = backStack.map(\.standardizedFileURL)
+        self.forwardStack = forwardStack.map(\.standardizedFileURL)
+    }
+
+    public var canGoBack: Bool { !backStack.isEmpty }
+    public var canGoForward: Bool { !forwardStack.isEmpty }
+    public var canGoUp: Bool {
+        guard let current else { return false }
+        return current.deletingLastPathComponent().path != current.path
+    }
+
+    public mutating func navigate(to url: URL) {
+        let normalized = url.standardizedFileURL
+        if let current {
+            if current.path == normalized.path {
+                return
+            }
+            backStack.append(current)
+        }
+        current = normalized
+        forwardStack.removeAll()
+    }
+
+    @discardableResult
+    public mutating func goBack() -> URL? {
+        guard let previous = backStack.popLast() else { return nil }
+        if let current {
+            forwardStack.append(current)
+        }
+        current = previous
+        return previous
+    }
+
+    @discardableResult
+    public mutating func goForward() -> URL? {
+        guard let next = forwardStack.popLast() else { return nil }
+        if let current {
+            backStack.append(current)
+        }
+        current = next
+        return next
+    }
+
+    @discardableResult
+    public mutating func goUp() -> URL? {
+        guard canGoUp, let current else { return nil }
+        let parent = current.deletingLastPathComponent()
+        navigate(to: parent)
+        return parent
+    }
+
+    public mutating func reset(to url: URL?) {
+        backStack.removeAll()
+        forwardStack.removeAll()
+        current = url?.standardizedFileURL
     }
 }
 
@@ -408,7 +684,7 @@ public enum FileBrowserScanner {
         searchQuery: String = ""
     ) -> [FileBrowserEntry] {
         let fm = FileManager.default
-        let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .isHiddenKey]
+        let keys: [URLResourceKey] = [.isDirectoryKey, .isPackageKey, .isHiddenKey, .fileSizeKey]
         guard let urls = try? fm.contentsOfDirectory(
             at: directory,
             includingPropertiesForKeys: keys,
@@ -428,7 +704,8 @@ public enum FileBrowserScanner {
             }
             let isPackage = values?.isPackage == true
             let isDir = (values?.isDirectory == true) && !isPackage
-            let entry = FileBrowserEntry(url: url, isDirectory: isDir)
+            let byteSize = values?.fileSize.map { Int64($0) }
+            let entry = FileBrowserEntry(url: url, isDirectory: isDir, fileSizeBytes: byteSize)
 
             if !isDir {
                 switch filter {

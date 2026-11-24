@@ -213,4 +213,147 @@ struct ManualBatchTests {
         let searched = FileBrowserScanner.listDirectory(tmp, filter: .all, searchQuery: "episode 10")
         #expect(searched.map(\.name) == ["Episode 10.ass", "Episode 10.mkv"])
     }
+
+    @Test("Type-locked Shift-click range selection skips opposite file types, folders, and unsupported files in both directions")
+    func typeLockedShiftClickRangeSelection() {
+        let entries = [
+            FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Subfolder"), isDirectory: true),
+            FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep01.mkv"), isDirectory: false),
+            FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep01.ass"), isDirectory: false),
+            FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep02.mkv"), isDirectory: false),
+            FileBrowserEntry(url: URL(fileURLWithPath: "/dir/notes.txt"), isDirectory: false),
+            FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep02.srt"), isDirectory: false),
+            FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep03.mkv"), isDirectory: false),
+            FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep03.ssa"), isDirectory: false),
+        ]
+
+        // Media-first range select: Ep01.mkv -> Shift-click Ep03.ssa should select ONLY Ep01.mkv, Ep02.mkv, Ep03.mkv
+        var sel = FileBrowserSelectionState()
+        sel.plainClick(entries[1]) // Ep01.mkv (.media)
+        #expect(sel.anchorKind == .media)
+        sel.shiftClick(entries[7], visibleEntries: entries)
+        let selectedMediaNames = entries.filter { sel.selectedPaths.contains($0.id) }.map(\.name)
+        #expect(selectedMediaNames == ["Ep01.mkv", "Ep02.mkv", "Ep03.mkv"])
+
+        // Subtitle-first range select: Ep01.ass -> Shift-click Ep03.mkv should select ONLY Ep01.ass, Ep02.srt
+        sel.plainClick(entries[2]) // Ep01.ass (.subtitle)
+        #expect(sel.anchorKind == .subtitle)
+        sel.shiftClick(entries[6], visibleEntries: entries)
+        let selectedSubNames = entries.filter { sel.selectedPaths.contains($0.id) }.map(\.name)
+        #expect(selectedSubNames == ["Ep01.ass", "Ep02.srt"])
+    }
+
+    @Test("Type-locked Command-click skips opposite file types and clears anchor when selection becomes empty")
+    func typeLockedCommandClickSelection() {
+        let ep1Video = FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep01.mkv"), isDirectory: false)
+        let ep2Video = FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep02.mkv"), isDirectory: false)
+        let ep1Sub = FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep01.ass"), isDirectory: false)
+        let ep2Sub = FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep02.srt"), isDirectory: false)
+        let folder = FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Extras"), isDirectory: true)
+
+        var sel = FileBrowserSelectionState()
+        sel.plainClick(ep1Video)
+        // Adding subtitle or folder while media-locked is ignored
+        sel.commandClick(ep1Sub)
+        sel.commandClick(folder)
+        #expect(sel.selectedPaths == [ep1Video.id])
+
+        // Adding another media file succeeds
+        sel.commandClick(ep2Video)
+        #expect(sel.selectedPaths == [ep1Video.id, ep2Video.id])
+        #expect(sel.anchorKind == .media)
+
+        // Deselecting all clears the anchor so subtitles can now be selected
+        sel.commandClick(ep1Video)
+        sel.commandClick(ep2Video)
+        #expect(sel.isEmpty)
+        #expect(sel.anchorPath == nil)
+        #expect(sel.anchorKind == nil)
+
+        // Subtitle-first lock ignores media files
+        sel.commandClick(ep1Sub)
+        #expect(sel.anchorKind == .subtitle)
+        sel.commandClick(ep1Video)
+        #expect(sel.selectedPaths == [ep1Sub.id])
+        sel.commandClick(ep2Sub)
+        #expect(sel.selectedPaths == [ep1Sub.id, ep2Sub.id])
+    }
+
+    @Test("Type-locked Command-A selects matching file kind and respects filter defaults")
+    func typeLockedSelectAllAndDragCompatibility() {
+        let entries = [
+            FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Subfolder"), isDirectory: true),
+            FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep01.mkv"), isDirectory: false),
+            FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep01.ass"), isDirectory: false),
+            FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep02.mkv"), isDirectory: false),
+            FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep02.srt"), isDirectory: false),
+        ]
+
+        // Existing subtitle anchor -> Cmd+A selects only subtitles
+        var sel = FileBrowserSelectionState()
+        sel.plainClick(entries[2]) // Ep01.ass
+        sel.selectAll(visibleEntries: entries, activeFilter: .all)
+        #expect(entries.filter { sel.selectedPaths.contains($0.id) }.map(\.name) == ["Ep01.ass", "Ep02.srt"])
+        #expect(sel.anchorKind == .subtitle)
+
+        // Empty selection on All -> selects media if present
+        sel.clear()
+        sel.selectAll(visibleEntries: entries, activeFilter: .all)
+        #expect(entries.filter { sel.selectedPaths.contains($0.id) }.map(\.name) == ["Ep01.mkv", "Ep02.mkv"])
+        #expect(sel.anchorKind == .media)
+
+        // Empty selection on All when only subtitles exist -> selects subtitles
+        let subOnlyEntries = entries.filter { $0.kind != .media }
+        sel.clear()
+        sel.selectAll(visibleEntries: subOnlyEntries, activeFilter: .all)
+        #expect(subOnlyEntries.filter { sel.selectedPaths.contains($0.id) }.map(\.name) == ["Ep01.ass", "Ep02.srt"])
+        #expect(sel.anchorKind == .subtitle)
+
+        // Column drag compatibility
+        #expect(FileBrowserItemKind.media.acceptsColumn(.sourceVideo) == true)
+        #expect(FileBrowserItemKind.media.acceptsColumn(.targetVideo) == true)
+        #expect(FileBrowserItemKind.media.acceptsColumn(.sourceSubtitle) == false)
+        #expect(FileBrowserItemKind.subtitle.acceptsColumn(.sourceSubtitle) == true)
+        #expect(FileBrowserItemKind.subtitle.acceptsColumn(.sourceVideo) == false)
+        #expect(FileBrowserItemKind.subtitle.acceptsColumn(.targetVideo) == false)
+    }
+
+    @Test("FileBrowserHistory tracks Back, Forward, and Parent-Up navigation accurately")
+    func fileBrowserNavigationHistory() {
+        var history = FileBrowserHistory()
+        let dirA = URL(fileURLWithPath: "/Media")
+        let dirB = URL(fileURLWithPath: "/Media/Show")
+        let dirC = URL(fileURLWithPath: "/Media/Show/Season1")
+        let dirD = URL(fileURLWithPath: "/Media/Show/Season2")
+
+        #expect(!history.canGoBack)
+        #expect(!history.canGoForward)
+        #expect(!history.canGoUp)
+
+        history.navigate(to: dirA)
+        history.navigate(to: dirB)
+        history.navigate(to: dirC)
+        #expect(history.current?.path == dirC.path)
+        #expect(history.canGoBack)
+        #expect(!history.canGoForward)
+        #expect(history.canGoUp)
+
+        // Back C -> B -> A
+        #expect(history.goBack()?.path == dirB.path)
+        #expect(history.canGoForward)
+        #expect(history.goBack()?.path == dirA.path)
+        #expect(!history.canGoBack)
+
+        // Forward A -> B, then navigating to D clears forward stack
+        #expect(history.goForward()?.path == dirB.path)
+        #expect(history.canGoForward)
+        history.navigate(to: dirD)
+        #expect(!history.canGoForward)
+        #expect(history.current?.path == dirD.path)
+
+        // Parent Up from /Media/Show/Season2 -> /Media/Show
+        #expect(history.goUp()?.path == dirB.path)
+        #expect(history.canGoBack)
+        #expect(history.goBack()?.path == dirD.path)
+    }
 }

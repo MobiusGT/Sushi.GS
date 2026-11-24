@@ -381,6 +381,7 @@ struct ErrorBannerView: View {
             if let onOpenLogs {
                 Button("View Log", action: onOpenLogs)
                     .controlSize(.small)
+                    .hoverDescription("Open the Log Inspector to inspect full error output")
             }
         }
         .padding(Space.md)
@@ -413,10 +414,12 @@ struct MissingDependenciesBanner: View {
             Spacer()
             Button("Manage…", action: onOpenDependencies)
                 .controlSize(.small)
+                .hoverDescription("Open the Dependencies workspace to inspect or configure tools")
             Button("Install Required Dependencies", action: onInstall)
                 .buttonStyle(.borderedProminent)
                 .controlSize(.small)
                 .disabled(isInstalling)
+                .hoverDescription("Download and configure uv, Python 3.13, sushi-batch, FFmpeg, and FFprobe")
         }
         .padding(Space.md)
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -451,11 +454,12 @@ struct FileDropZoneCard: View {
                 if fileURL != nil {
                     Button("Change…", action: onChoose)
                         .controlSize(.small)
+                        .hoverDescription("Choose a different \(title.lowercased()) file")
                     Button("Clear", systemImage: "xmark.circle.fill", action: onClear)
                         .labelStyle(.iconOnly)
                         .buttonStyle(.plain)
                         .foregroundStyle(.secondary)
-                        .help("Remove selected file")
+                        .hoverDescription("Remove selected \(title.lowercased()) file")
                 }
             }
 
@@ -508,6 +512,7 @@ struct FileDropZoneCard: View {
                         .multilineTextAlignment(.center)
                     Button("Choose File…", action: onChoose)
                         .controlSize(.small)
+                        .hoverDescription("Browse for a \(title.lowercased()) file")
                 }
                 .frame(maxWidth: .infinity, minHeight: 88)
             }
@@ -576,6 +581,7 @@ struct TrackSelectionCard: View {
                 if markAsCustomOverride, job.hasCustomTrackOverrides, let onResetToBatchRule {
                     Button("Reset to Batch Rule", action: onResetToBatchRule)
                         .controlSize(.small)
+                        .hoverDescription("Clear per-episode overrides and reapply the batch track rules")
                 }
             }
 
@@ -725,6 +731,7 @@ struct TrackSelectionCard: View {
                 if job.sourceURL != nil {
                     Button("Choose External Subtitle…", action: onChooseExternalSub)
                         .controlSize(.small)
+                        .hoverDescription("Select an external .ass, .srt, or .ssa subtitle file to sync")
                 }
             }
         } else {
@@ -768,14 +775,17 @@ struct TrackSelectionCard: View {
                     .help(ext.path)
                 Button("Change…", action: onChooseExternalSub)
                     .controlSize(.small)
+                    .hoverDescription("Choose a different external subtitle file")
                 Button("Clear", action: onClearExternalSub)
                     .controlSize(.small)
+                    .hoverDescription("Remove the external subtitle file")
             } else {
                 Text("Select an `.ass`, `.srt`, or `.ssa` file to retime.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Button("Choose Subtitle…", action: onChooseExternalSub)
                     .controlSize(.small)
+                    .hoverDescription("Browse for an external .ass, .srt, or .ssa subtitle file")
             }
         }
     }

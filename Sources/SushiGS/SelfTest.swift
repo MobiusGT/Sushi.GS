@@ -56,7 +56,7 @@ enum SelfTest {
                 "checkmark.circle", "checkmark.circle.fill", "exclamationmark.circle",
                 "plus", "clock", "ellipsis.circle", "slider.horizontal.3",
                 "questionmark.circle", "xmark", "arrow.right.circle", "folder", "folder.fill",
-                "chevron.right", "chevron.down", "arrow.turn.left.up", "arrow.up.arrow.down",
+                "chevron.left", "chevron.right", "chevron.down", "arrow.up", "arrow.up.arrow.down",
                 "arrow.uturn.down", "trash", "line.3.horizontal", "rectangle.dashed",
                 "doc", "doc.on.doc", "doc.text.magnifyingglass", "arrow.clockwise",
             ]
@@ -67,6 +67,7 @@ enum SelfTest {
         let paths = AppPaths.current()
         check("isolated APP_STORE active", paths.isOverridden, detail: paths.rootDir.path)
         let model = AppModel(paths: paths)
+        check("Log Inspector defaults to collapsed", model.showInspector == false)
         model.saveCurrentAsPreset(named: "SelfTest Preset")
         check("preset saved", model.presets.contains { $0.name == "SelfTest Preset" })
 
@@ -158,6 +159,28 @@ enum SelfTest {
                 && model.manualColumns.row(at: 1).sourceURL?.lastPathComponent == "Totally_Unrelated_B.mkv"
                 && model.manualColumns.row(at: 1).subtitleURL?.lastPathComponent == "Sub1.ass"
                 && model.manualColumns.row(at: 1).targetURL?.lastPathComponent == "Alpha.mkv"
+        )
+
+        // 7b. File Browser navigation history & type-locked selection checks
+        var browserHistory = FileBrowserHistory()
+        browserHistory.navigate(to: URL(fileURLWithPath: "/Media"))
+        browserHistory.navigate(to: URL(fileURLWithPath: "/Media/Show"))
+        let wentBack = browserHistory.goBack()?.path == "/Media"
+        let wentForward = browserHistory.goForward()?.path == "/Media/Show"
+        let wentUp = browserHistory.goUp()?.path == "/Media"
+        check("File Browser Back/Forward/Up navigation works", wentBack && wentForward && wentUp)
+
+        let selEntries = [
+            FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep01.mkv"), isDirectory: false),
+            FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep01.ass"), isDirectory: false),
+            FileBrowserEntry(url: URL(fileURLWithPath: "/dir/Ep02.mkv"), isDirectory: false),
+        ]
+        var selState = FileBrowserSelectionState()
+        selState.plainClick(selEntries[0])
+        selState.shiftClick(selEntries[2], visibleEntries: selEntries)
+        check(
+            "type-locked File Browser selection skips opposite file types",
+            selState.selectedPaths == Set([selEntries[0].id, selEntries[2].id])
         )
 
         // 8. CLI flag mapping & warning analyzer checks

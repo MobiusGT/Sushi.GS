@@ -1,43 +1,217 @@
 import AppKit
+import Observation
 import SwiftUI
 import SushiGSKit
 import UniformTypeIdentifiers
 
-// MARK: - Internal Drag Payload (Browser Multi-Select & Single-Column Reorder)
+// MARK: - Internal Drag Payload & Isolated Local Drag Coordinator
 
 private nonisolated struct ManualDragTransfer: Codable, Sendable {
-    enum Kind: String, Codable, Sendable {
-        case browserFiles
-        case columnReorder
-    }
-
     var sushiManualTransfer: Bool = true
-    var kind: Kind
     var filePaths: [String]
-    var sourceColumn: ManualBatchColumnKind?
-    var cellIDs: [UUID]
-    var sourceIndex: Int?
+    var itemKind: FileBrowserItemKind?
 }
 
-// MARK: - Manual Batch Workspace
+/// Lightweight local drag coordinator owned by `ManualBatchView` (never on `AppModel`).
+/// Isolates ephemeral drag hover state so dragging over rows only updates the affected column's
+/// 2 pt insertion-line overlay without re-rendering the File Browser, top navigation bar, or untouched columns.
+@Observable
+final class ManualDragCoordinator {
+    // Active drag originating from the File Browser
+    var browserDragKind: FileBrowserItemKind?
+    @ObservationIgnored var browserDragURLs: [URL] = []
+
+    // Active direct pointer reorder within a single pairing column (zero NSItemProvider overhead)
+    var reorderColumn: ManualBatchColumnKind?
+    var reorderCellIDs: Set<UUID> = []
+    var reorderOriginIndex: Int?
+
+    // Targeted drop slot — deduplicated so integer slot changes only redraw the insertion line
+    var dropTargetColumn: ManualBatchColumnKind?
+    var dropInsertIndex: Int?
+
+    @ObservationIgnored private var localMonitor: Any?
+    @ObservationIgnored private var globalMonitor: Any?
+    @ObservationIgnored private var resignObserver: NSObjectProtocol?
+    @ObservationIgnored private var cleanupTask: Task<Void, Never>?
+
+    var isAnyDragActive: Bool {
+        browserDragKind != nil || reorderColumn != nil
+    }
+
+    func isColumnIncompatible(_ column: ManualBatchColumnKind) -> Bool {
+        if let kind = browserDragKind {
+            return !kind.acceptsColumn(column)
+        }
+        if let activeReorder = reorderColumn {
+            return activeReorder != column
+        }
+        return false
+    }
+
+    func isCellBeingReordered(column: ManualBatchColumnKind, cellID: UUID) -> Bool {
+        reorderColumn == column && reorderCellIDs.contains(cellID)
+    }
+
+    func beginBrowserDrag(urls: [URL], kind: FileBrowserItemKind?) {
+        cleanupTask?.cancel()
+        browserDragURLs = urls
+        browserDragKind = kind
+        dropTargetColumn = nil
+        dropInsertIndex = nil
+        installDragEndMonitors()
+    }
+
+    func updateDropTarget(column: ManualBatchColumnKind?, index: Int?) {
+        if dropTargetColumn != column {
+            dropTargetColumn = column
+        }
+        if dropInsertIndex != index {
+            dropInsertIndex = index
+        }
+    }
+
+    func updatePointerReorder(
+        column: ManualBatchColumnKind,
+        cellIDs: Set<UUID>,
+        originIndex: Int,
+        locationY: CGFloat,
+        columnCount: Int,
+        rowHeight: CGFloat
+    ) {
+        if reorderColumn != column {
+            reorderColumn = column
+            installEscapeMonitorForReorder()
+        }
+        if reorderCellIDs != cellIDs {
+            reorderCellIDs = cellIDs
+        }
+        if reorderOriginIndex != originIndex {
+            reorderOriginIndex = originIndex
+        }
+        let rawSlot = Int((locationY / rowHeight).rounded())
+        let clampedSlot = max(0, min(rawSlot, columnCount))
+        updateDropTarget(column: column, index: clampedSlot)
+    }
+
+    func consumeBrowserDragURLs() -> [URL]? {
+        guard !browserDragURLs.isEmpty else { return nil }
+        let urls = browserDragURLs
+        endAllDrags()
+        return urls
+    }
+
+    func endAllDrags() {
+        cleanupTask?.cancel()
+        cleanupTask = nil
+        removeDragEndMonitors()
+        if browserDragKind != nil { browserDragKind = nil }
+        if !browserDragURLs.isEmpty { browserDragURLs = [] }
+        if reorderColumn != nil { reorderColumn = nil }
+        if !reorderCellIDs.isEmpty { reorderCellIDs = [] }
+        if reorderOriginIndex != nil { reorderOriginIndex = nil }
+        if dropTargetColumn != nil { dropTargetColumn = nil }
+        if dropInsertIndex != nil { dropInsertIndex = nil }
+    }
+
+    private func scheduleCleanupAfterPointerRelease() {
+        cleanupTask?.cancel()
+        cleanupTask = Task { @MainActor [weak self] in
+            // Allow performDrop (if hovering a valid column) to run first before clearing state.
+            try? await Task.sleep(for: .milliseconds(80))
+            guard !Task.isCancelled, let self else { return }
+            if (NSEvent.pressedMouseButtons & 1) == 0 {
+                self.endAllDrags()
+            }
+        }
+    }
+
+    private func installDragEndMonitors() {
+        removeDragEndMonitors()
+
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseUp, .keyDown, .mouseMoved]) { [weak self] event in
+            MainActor.assumeIsolated {
+                guard let self, self.browserDragKind != nil else { return }
+                if event.type == .keyDown && event.keyCode == 53 {
+                    self.endAllDrags()
+                } else if event.type == .leftMouseUp {
+                    self.scheduleCleanupAfterPointerRelease()
+                } else if event.type == .mouseMoved && (NSEvent.pressedMouseButtons & 1) == 0 {
+                    self.endAllDrags()
+                }
+            }
+            return event
+        }
+
+        globalMonitor = NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseUp]) { [weak self] _ in
+            Task { @MainActor [weak self] in
+                guard let self, self.browserDragKind != nil else { return }
+                self.scheduleCleanupAfterPointerRelease()
+            }
+        }
+
+        resignObserver = NotificationCenter.default.addObserver(
+            forName: NSApplication.didResignActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, self.browserDragKind != nil else { return }
+                if (NSEvent.pressedMouseButtons & 1) == 0 {
+                    self.endAllDrags()
+                }
+            }
+        }
+    }
+
+    private func installEscapeMonitorForReorder() {
+        guard localMonitor == nil else { return }
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { [weak self] event in
+            MainActor.assumeIsolated {
+                if event.keyCode == 53 {
+                    self?.endAllDrags()
+                }
+            }
+            return event
+        }
+    }
+
+    func removeDragEndMonitors() {
+        if let localMonitor {
+            NSEvent.removeMonitor(localMonitor)
+            self.localMonitor = nil
+        }
+        if let globalMonitor {
+            NSEvent.removeMonitor(globalMonitor)
+            self.globalMonitor = nil
+        }
+        if let resignObserver {
+            NotificationCenter.default.removeObserver(resignObserver)
+            self.resignObserver = nil
+        }
+    }
+}
+
+// MARK: - Manual Batch Workspace (Inverted-L File Browser + Synchronized Resizable Columns)
 
 struct ManualBatchView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.undoManager) private var undoManager
 
-    @AppStorage("manualBatch.browserWidth") private var storedBrowserWidth: Double = 192
+    @AppStorage("manualBatch.browserWidth") private var storedBrowserWidth: Double = 224
     @AppStorage("manualBatch.embeddedSourceRatio") private var storedEmbeddedSourceRatio: Double = 0.50
-    @AppStorage("manualBatch.externalSourceRatio") private var storedExternalSourceRatio: Double = 0.32
-    @AppStorage("manualBatch.externalSubtitleRatio") private var storedExternalSubtitleRatio: Double = 0.36
+    @AppStorage("manualBatch.externalSourceRatio") private var storedExternalSourceRatio: Double = 0.34
+    @AppStorage("manualBatch.externalSubtitleRatio") private var storedExternalSubtitleRatio: Double = 0.32
 
+    @State private var dragCoordinator = ManualDragCoordinator()
     @State private var showTrackRulesPopover = false
-    @State private var hoveredRowIndex: Int?
     @State private var isBrowserDropTargeted = false
     @State private var dragStartBrowserWidth: CGFloat?
     @State private var dragStartSourceRatio: Double?
     @State private var dragStartSubtitleRatio: Double?
 
     private let rowHeight: CGFloat = 32
+    private let browserNavBarHeight: CGFloat = 40
     private let columnHeaderHeight: CGFloat = 48
     private let indexGutterWidth: CGFloat = 32
     private let statusColWidth: CGFloat = 88
@@ -70,11 +244,21 @@ struct ManualBatchView: View {
             .padding(.horizontal, Space.margin)
             .padding(.top, model.dependencies.allRequiredReady ? Space.md : 0)
 
-            Divider()
+            VStack(spacing: 0) {
+                Divider()
 
-            resizableColumnWorkspace
-                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
-                .clipped()
+                // Inverted-L (Γ) Top Horizontal File Browser Navigation Bar
+                ManualFileBrowserNavBar(
+                    height: browserNavBarHeight,
+                    isDropTargeted: $isBrowserDropTargeted
+                )
+
+                // Inverted-L (Γ) Body: Left Vertical File List + Right Nested Pairing Columns
+                resizableColumnWorkspace
+                    .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                    .clipped()
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
 
             if let selectedJob = selectedManualJob, shouldShowSelectedDetailStrip(selectedJob) {
                 Divider()
@@ -85,6 +269,9 @@ struct ManualBatchView: View {
         }
         .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
         .gridArea("manual", inset: Space.margin)
+        .onDisappear {
+            dragCoordinator.endAllDrags()
+        }
         .confirmationDialog(
             "Clear Manual Batch?",
             isPresented: $model.showClearManualBatchConfirmation,
@@ -247,7 +434,13 @@ struct ManualBatchView: View {
         }
     }
 
-    // MARK: - Resizable Multi-Column Split Layout
+    // MARK: - Resizable Multi-Column Split Layout Nested Inside Inverted-L (Γ)
+
+    private struct PairingColumnWidths {
+        let sourceWidth: CGFloat
+        let subtitleWidth: CGFloat
+        let targetWidth: CGFloat
+    }
 
     private var resizableColumnWorkspace: some View {
         let isExternal = model.manualColumns.subtitleMode == .external
@@ -255,9 +448,9 @@ struct ManualBatchView: View {
         return GeometryReader { geo in
             let totalWidth = max(geo.size.width, 520)
             let totalHeight = max(geo.size.height, 160)
-            let scrollViewportHeight = max(totalHeight - columnHeaderHeight - 1, 100)
-            let minBrowser: CGFloat = 160
-            let maxBrowser: CGFloat = min(420, totalWidth * 0.44)
+            let scrollViewportHeight = max(totalHeight - columnHeaderHeight - 2, 100)
+            let minBrowser: CGFloat = 172
+            let maxBrowser: CGFloat = min(420, totalWidth * 0.42)
             let browserWidth = min(max(CGFloat(storedBrowserWidth), minBrowser), maxBrowser)
             let pairingAreaWidth = max(totalWidth - browserWidth - 1, 320)
             let dividerCount: CGFloat = isExternal ? 2 : 1
@@ -269,9 +462,9 @@ struct ManualBatchView: View {
             )
 
             HStack(spacing: 0) {
-                // Column 1: Lightweight Native File Browser
-                ManualFileBrowserPane(
-                    headerHeight: columnHeaderHeight,
+                // Vertical stem of the inverted-L (Γ) File Browser (shares Surfaces.card fill with top nav bar)
+                ManualFileBrowserListPane(
+                    dragCoordinator: dragCoordinator,
                     isDropTargeted: $isBrowserDropTargeted,
                     onAddFilesToColumn: { urls, col in
                         model.manualInsert(urls: urls, into: col, at: nil, expandDirectories: true, undoManager: undoManager)
@@ -279,7 +472,7 @@ struct ManualBatchView: View {
                 )
                 .frame(width: browserWidth, height: totalHeight, alignment: .topLeading)
 
-                // Resizable Divider 0: File Browser | Pairing Columns
+                // Resizable Divider 0: File Browser vertical stem | Pairing Workspace
                 ColumnResizeDivider(
                     height: totalHeight,
                     onDragChanged: { delta in
@@ -293,16 +486,21 @@ struct ManualBatchView: View {
                         dragStartBrowserWidth = nil
                     },
                     onDoubleClickReset: {
-                        storedBrowserWidth = 192
+                        storedBrowserWidth = 224
                     }
                 )
 
-                // Columns 2–4: Synchronized Pairing Workspace
+                // Right Side: Pairing Columns nested cleanly inside the Γ corner
                 ZStack(alignment: .topLeading) {
                     VStack(spacing: 0) {
+                        // Crisp inner horizontal seam separating the Γ top nav bar from the pairing columns
+                        Rectangle()
+                            .fill(Surfaces.hairline)
+                            .frame(width: pairingAreaWidth, height: 1)
+
                         pairingHeadersRow(columnWidths: columnWidths, isExternal: isExternal)
                             .frame(width: pairingAreaWidth, height: columnHeaderHeight)
-                            .background(Surfaces.card)
+                            .background(Surfaces.dropZone)
 
                         Divider()
 
@@ -315,7 +513,7 @@ struct ManualBatchView: View {
                     }
                     .frame(width: pairingAreaWidth, height: totalHeight, alignment: .topLeading)
 
-                    // Full-height interactive column resize handles spanning both header and rows
+                    // Full-height interactive column resize dividers between pairing columns
                     HStack(spacing: 0) {
                         Color.clear
                             .frame(width: indexGutterWidth + columnWidths.sourceWidth, height: totalHeight)
@@ -332,8 +530,8 @@ struct ManualBatchView: View {
                             },
                             onDoubleClickReset: {
                                 if isExternal {
-                                    storedExternalSourceRatio = 0.32
-                                    storedExternalSubtitleRatio = 0.36
+                                    storedExternalSourceRatio = 0.34
+                                    storedExternalSubtitleRatio = 0.32
                                 } else {
                                     storedEmbeddedSourceRatio = 0.50
                                 }
@@ -354,8 +552,8 @@ struct ManualBatchView: View {
                                     dragStartSubtitleRatio = nil
                                 },
                                 onDoubleClickReset: {
-                                    storedExternalSourceRatio = 0.32
-                                    storedExternalSubtitleRatio = 0.36
+                                    storedExternalSourceRatio = 0.34
+                                    storedExternalSubtitleRatio = 0.32
                                 }
                             )
                         }
@@ -375,15 +573,9 @@ struct ManualBatchView: View {
         }
     }
 
-    private struct PairingColumnWidths {
-        let sourceWidth: CGFloat
-        let subtitleWidth: CGFloat
-        let targetWidth: CGFloat
-    }
-
     private func computeColumnWidths(dataColsWidth: CGFloat, isExternal: Bool) -> PairingColumnWidths {
         if isExternal {
-            let minCol: CGFloat = 96
+            let minCol: CGFloat = 104
             let maxSrc = max(minCol, dataColsWidth - 2 * minCol)
             let srcW = min(max(dataColsWidth * CGFloat(storedExternalSourceRatio), minCol), maxSrc)
             let maxSub = max(minCol, dataColsWidth - srcW - minCol)
@@ -391,7 +583,7 @@ struct ManualBatchView: View {
             let dstW = max(dataColsWidth - srcW - subW, minCol)
             return PairingColumnWidths(sourceWidth: srcW, subtitleWidth: subW, targetWidth: dstW)
         } else {
-            let minCol: CGFloat = 100
+            let minCol: CGFloat = 120
             let maxSrc = max(minCol, dataColsWidth - minCol)
             let srcW = min(max(dataColsWidth * CGFloat(storedEmbeddedSourceRatio), minCol), maxSrc)
             let dstW = max(dataColsWidth - srcW, minCol)
@@ -410,9 +602,13 @@ struct ManualBatchView: View {
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: indexGutterWidth, alignment: .center)
+                .hoverDescription("Row pair number — files on the same row are paired directly")
 
             pairingColumnHeader(column: .sourceVideo)
                 .frame(width: columnWidths.sourceWidth, height: columnHeaderHeight)
+                .overlay {
+                    ManualColumnHeaderDimOverlay(column: .sourceVideo, coordinator: dragCoordinator)
+                }
 
             Rectangle()
                 .fill(Surfaces.hairline)
@@ -421,6 +617,9 @@ struct ManualBatchView: View {
             if isExternal {
                 pairingColumnHeader(column: .sourceSubtitle)
                     .frame(width: columnWidths.subtitleWidth, height: columnHeaderHeight)
+                    .overlay {
+                        ManualColumnHeaderDimOverlay(column: .sourceSubtitle, coordinator: dragCoordinator)
+                    }
 
                 Rectangle()
                     .fill(Surfaces.hairline)
@@ -429,11 +628,15 @@ struct ManualBatchView: View {
 
             pairingColumnHeader(column: .targetVideo)
                 .frame(width: columnWidths.targetWidth, height: columnHeaderHeight)
+                .overlay {
+                    ManualColumnHeaderDimOverlay(column: .targetVideo, coordinator: dragCoordinator)
+                }
 
             Text("Status")
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
                 .frame(width: statusColWidth, alignment: .center)
+                .hoverDescription("Sync readiness and run status for each paired row")
         }
     }
 
@@ -454,6 +657,7 @@ struct ManualBatchView: View {
                     .padding(.horizontal, Space.xs)
                     .padding(.vertical, 1)
                     .background(Surfaces.cardHover, in: Capsule())
+                    .hoverDescription("\(count) \(count == 1 ? "file" : "files") in \(column.title)")
             }
 
             HStack(spacing: Space.sm) {
@@ -462,33 +666,36 @@ struct ManualBatchView: View {
                 } label: {
                     Image(systemName: "plus")
                         .font(.caption2.weight(.semibold))
+                        .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(.secondary)
                 .disabled(model.isRunning)
-                .help("Add files or folders to \(column.title)")
+                .hoverDescription("Add files or folders to \(column.title)")
 
                 Button {
                     model.manualSortColumn(column, undoManager: undoManager)
                 } label: {
                     Image(systemName: "arrow.up.arrow.down")
                         .font(.caption2)
+                        .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(hasItems ? .secondary : .tertiary)
                 .disabled(model.isRunning || count < 2)
-                .help("Sort \(column.title) A–Z (Natural Finder order)")
+                .hoverDescription("Sort \(column.title) A–Z in natural Finder order")
 
                 Button {
                     model.manualReverseColumn(column, undoManager: undoManager)
                 } label: {
                     Image(systemName: "arrow.uturn.down")
                         .font(.caption2)
+                        .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(hasItems ? .secondary : .tertiary)
                 .disabled(model.isRunning || model.manualColumns.cells(in: column).count < 2)
-                .help("Reverse order of \(column.title)")
+                .hoverDescription("Reverse the item order in \(column.title)")
 
                 Spacer(minLength: 0)
 
@@ -497,11 +704,12 @@ struct ManualBatchView: View {
                 } label: {
                     Image(systemName: "trash")
                         .font(.caption2)
+                        .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.plain)
                 .foregroundStyle(hasItems ? .secondary : .tertiary)
                 .disabled(model.isRunning || !hasItems)
-                .help("Clear all items in \(column.title)")
+                .hoverDescription("Clear all items from \(column.title)")
             }
         }
         .padding(.horizontal, Space.sm)
@@ -522,7 +730,7 @@ struct ManualBatchView: View {
             }
             let baseSrc = dragStartSourceRatio ?? storedExternalSourceRatio
             let baseSub = dragStartSubtitleRatio ?? storedExternalSubtitleRatio
-            let minRatio = Double(96 / dataColsWidth)
+            let minRatio = Double(104 / dataColsWidth)
             let combined = baseSrc + baseSub
             let nextSrc = min(max(baseSrc + Double(delta / dataColsWidth), minRatio), combined - minRatio)
             storedExternalSourceRatio = nextSrc
@@ -532,7 +740,7 @@ struct ManualBatchView: View {
                 dragStartSourceRatio = Double(current.sourceWidth / dataColsWidth)
             }
             let baseSrc = dragStartSourceRatio ?? storedEmbeddedSourceRatio
-            let minRatio = Double(100 / dataColsWidth)
+            let minRatio = Double(120 / dataColsWidth)
             storedEmbeddedSourceRatio = min(max(baseSrc + Double(delta / dataColsWidth), minRatio), 1.0 - minRatio)
         }
     }
@@ -548,12 +756,12 @@ struct ManualBatchView: View {
         }
         let baseSub = dragStartSubtitleRatio ?? storedExternalSubtitleRatio
         let srcRatio = Double(current.sourceWidth / dataColsWidth)
-        let minRatio = Double(96 / dataColsWidth)
+        let minRatio = Double(104 / dataColsWidth)
         let maxSub = max(minRatio, 1.0 - srcRatio - minRatio)
         storedExternalSubtitleRatio = min(max(baseSub + Double(delta / dataColsWidth), minRatio), maxSub)
     }
 
-    // MARK: - Synchronized Scrollable Pairing Rows
+    // MARK: - Synchronized Scrollable Pairing Rows + Column-Level Drop Overlays
 
     private func pairingScrollBody(
         columnWidths: PairingColumnWidths,
@@ -561,150 +769,171 @@ struct ManualBatchView: View {
         viewportHeight: CGFloat
     ) -> some View {
         let rows = model.manualColumns.rows
-        let tailHeight = max(64, viewportHeight - CGFloat(rows.count) * rowHeight)
+        let contentHeight = rows.isEmpty
+            ? max(viewportHeight, 160)
+            : max(viewportHeight, CGFloat(rows.count) * rowHeight + 64)
+        let tailHeight = max(64, contentHeight - CGFloat(rows.count) * rowHeight)
 
         return ScrollView {
-            VStack(spacing: 0) {
-                if rows.isEmpty {
-                    emptyColumnsDropCanvas(
-                        columnWidths: columnWidths,
-                        isExternal: isExternal,
-                        canvasHeight: max(viewportHeight, 160)
-                    )
-                } else {
-                    LazyVStack(spacing: 0) {
-                        ForEach(rows, id: \.index) { row in
-                            pairedRowView(
-                                row: row,
-                                job: model.manualJobs.indices.contains(row.index) ? model.manualJobs[row.index] : nil,
-                                columnWidths: columnWidths,
-                                isExternal: isExternal
-                            )
+            ZStack(alignment: .topLeading) {
+                // Layer 1 (Bottom): Single column-level DropDelegate targets (2 or 3 total — never per-cell!)
+                // AppKit routes drag sessions through non-drop rows above directly to these column targets.
+                HStack(spacing: 0) {
+                    Color.clear
+                        .frame(width: indexGutterWidth, height: contentHeight)
+
+                    ManualColumnDropHitTarget(
+                        column: .sourceVideo,
+                        width: columnWidths.sourceWidth,
+                        height: contentHeight,
+                        rowHeight: rowHeight,
+                        itemCount: model.manualColumns.sourceVideos.count,
+                        coordinator: dragCoordinator,
+                        onCommitDrop: { urls, insertIdx, expand in
+                            model.manualInsert(urls: urls, into: .sourceVideo, at: insertIdx, expandDirectories: expand, undoManager: undoManager)
                         }
+                    )
+
+                    Color.clear
+                        .frame(width: 1, height: contentHeight)
+
+                    if isExternal {
+                        ManualColumnDropHitTarget(
+                            column: .sourceSubtitle,
+                            width: columnWidths.subtitleWidth,
+                            height: contentHeight,
+                            rowHeight: rowHeight,
+                            itemCount: model.manualColumns.sourceSubtitles.count,
+                            coordinator: dragCoordinator,
+                            onCommitDrop: { urls, insertIdx, expand in
+                                model.manualInsert(urls: urls, into: .sourceSubtitle, at: insertIdx, expandDirectories: expand, undoManager: undoManager)
+                            }
+                        )
+
+                        Color.clear
+                            .frame(width: 1, height: contentHeight)
                     }
 
-                    // Trailing drop tail so users can always append to any column below existing rows
-                    trailingDropTail(
-                        columnWidths: columnWidths,
-                        isExternal: isExternal,
-                        tailHeight: tailHeight
+                    ManualColumnDropHitTarget(
+                        column: .targetVideo,
+                        width: columnWidths.targetWidth,
+                        height: contentHeight,
+                        rowHeight: rowHeight,
+                        itemCount: model.manualColumns.targetVideos.count,
+                        coordinator: dragCoordinator,
+                        onCommitDrop: { urls, insertIdx, expand in
+                            model.manualInsert(urls: urls, into: .targetVideo, at: insertIdx, expandDirectories: expand, undoManager: undoManager)
+                        }
                     )
+
+                    Color.clear
+                        .frame(width: statusColWidth, height: contentHeight)
                 }
+                .frame(height: contentHeight)
+
+                // Layer 2 (Middle): Interactive pairing rows + direct pointer intra-column reordering
+                VStack(spacing: 0) {
+                    if rows.isEmpty {
+                        emptyColumnsCanvas(
+                            columnWidths: columnWidths,
+                            isExternal: isExternal,
+                            canvasHeight: contentHeight
+                        )
+                    } else {
+                        LazyVStack(spacing: 0) {
+                            ForEach(rows, id: \.index) { row in
+                                ManualPairedRowView(
+                                    row: row,
+                                    job: model.manualJobs.indices.contains(row.index) ? model.manualJobs[row.index] : nil,
+                                    sourceWidth: columnWidths.sourceWidth,
+                                    subtitleWidth: columnWidths.subtitleWidth,
+                                    targetWidth: columnWidths.targetWidth,
+                                    isExternal: isExternal,
+                                    indexGutterWidth: indexGutterWidth,
+                                    statusColWidth: statusColWidth,
+                                    rowHeight: rowHeight,
+                                    dragCoordinator: dragCoordinator,
+                                    onSelectCell: { col, cell in
+                                        handleCellClick(column: col, rowIndex: row.index, cell: cell)
+                                    },
+                                    onSelectRow: {
+                                        model.selectedManualRowIndex = row.index
+                                        model.selectedManualColumn = nil
+                                        model.selectedManualCellIDs.removeAll()
+                                    },
+                                    onPointerReorderChanged: { col, cell, y in
+                                        handlePointerReorderChanged(column: col, rowIndex: row.index, cell: cell, locationY: y)
+                                    },
+                                    onPointerReorderEnded: { col in
+                                        handlePointerReorderEnded(column: col)
+                                    }
+                                )
+                            }
+                        }
+
+                        // Continuous column hairlines below rows so the workspace feels solid
+                        HStack(spacing: 0) {
+                            Color.clear.frame(width: indexGutterWidth + columnWidths.sourceWidth, height: tailHeight)
+                            Rectangle().fill(Surfaces.hairline).frame(width: 1, height: tailHeight)
+                            if isExternal {
+                                Color.clear.frame(width: columnWidths.subtitleWidth, height: tailHeight)
+                                Rectangle().fill(Surfaces.hairline).frame(width: 1, height: tailHeight)
+                            }
+                            Color.clear.frame(width: columnWidths.targetWidth + statusColWidth, height: tailHeight)
+                        }
+                        .frame(height: tailHeight)
+                        .allowsHitTesting(false)
+                    }
+                }
+
+                // Layer 3 (Top, non-hit-testing): Isolated visual feedback (incompatible column dim + 2 pt insertion line)
+                HStack(spacing: 0) {
+                    Color.clear
+                        .frame(width: indexGutterWidth, height: contentHeight)
+
+                    ManualColumnVisualOverlay(
+                        column: .sourceVideo,
+                        width: columnWidths.sourceWidth,
+                        height: contentHeight,
+                        rowHeight: rowHeight,
+                        coordinator: dragCoordinator
+                    )
+
+                    Color.clear
+                        .frame(width: 1, height: contentHeight)
+
+                    if isExternal {
+                        ManualColumnVisualOverlay(
+                            column: .sourceSubtitle,
+                            width: columnWidths.subtitleWidth,
+                            height: contentHeight,
+                            rowHeight: rowHeight,
+                            coordinator: dragCoordinator
+                        )
+
+                        Color.clear
+                            .frame(width: 1, height: contentHeight)
+                    }
+
+                    ManualColumnVisualOverlay(
+                        column: .targetVideo,
+                        width: columnWidths.targetWidth,
+                        height: contentHeight,
+                        rowHeight: rowHeight,
+                        coordinator: dragCoordinator
+                    )
+
+                    Color.clear
+                        .frame(width: statusColWidth, height: contentHeight)
+                }
+                .frame(height: contentHeight)
+                .allowsHitTesting(false)
             }
+            .coordinateSpace(name: "pairingRowsScroll")
         }
     }
 
-    private func pairedRowView(
-        row: ManualBatchPairRow,
-        job: EpisodeJob?,
-        columnWidths: PairingColumnWidths,
-        isExternal: Bool
-    ) -> some View {
-        let isSelectedRow = model.selectedManualRowIndex == row.index
-        let isHoveredRow = hoveredRowIndex == row.index
-
-        return HStack(spacing: 0) {
-            // Row index gutter (#1, #2, #3...)
-            Text("#\(row.index + 1)")
-                .font(.caption.monospacedDigit().weight(.semibold))
-                .foregroundStyle(isSelectedRow ? Palette.accentText : .secondary)
-                .frame(width: indexGutterWidth, height: rowHeight, alignment: .center)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    model.selectedManualRowIndex = row.index
-                    model.selectedManualColumn = nil
-                    model.selectedManualCellIDs.removeAll()
-                }
-
-            // Column 2: Source Video
-            ManualPairingCellView(
-                column: .sourceVideo,
-                rowIndex: row.index,
-                cell: row.sourceCell,
-                job: job,
-                rowHeight: rowHeight,
-                isSelectedCell: isCellSelected(column: .sourceVideo, cell: row.sourceCell),
-                onSelectCell: { handleCellClick(column: .sourceVideo, rowIndex: row.index, cell: row.sourceCell) },
-                onDropPayload: { handleCellDrop(providers: $0, column: .sourceVideo, rowIndex: row.index) },
-                onDragProvider: { makeCellDragProvider(column: .sourceVideo, rowIndex: row.index, cell: $0) },
-                dragBadgeCount: { dragCountForCell(column: .sourceVideo, cell: $0) }
-            )
-            .frame(width: columnWidths.sourceWidth, height: rowHeight)
-
-            Rectangle()
-                .fill(Surfaces.hairline)
-                .frame(width: 1, height: rowHeight)
-
-            // Column 3 (External mode): Source Subtitles
-            if isExternal {
-                ManualPairingCellView(
-                    column: .sourceSubtitle,
-                    rowIndex: row.index,
-                    cell: row.subtitleCell,
-                    job: job,
-                    rowHeight: rowHeight,
-                    isSelectedCell: isCellSelected(column: .sourceSubtitle, cell: row.subtitleCell),
-                    onSelectCell: { handleCellClick(column: .sourceSubtitle, rowIndex: row.index, cell: row.subtitleCell) },
-                    onDropPayload: { handleCellDrop(providers: $0, column: .sourceSubtitle, rowIndex: row.index) },
-                    onDragProvider: { makeCellDragProvider(column: .sourceSubtitle, rowIndex: row.index, cell: $0) },
-                    dragBadgeCount: { dragCountForCell(column: .sourceSubtitle, cell: $0) }
-                )
-                .frame(width: columnWidths.subtitleWidth, height: rowHeight)
-
-                Rectangle()
-                    .fill(Surfaces.hairline)
-                    .frame(width: 1, height: rowHeight)
-            }
-
-            // Target Video column
-            ManualPairingCellView(
-                column: .targetVideo,
-                rowIndex: row.index,
-                cell: row.targetCell,
-                job: job,
-                rowHeight: rowHeight,
-                isSelectedCell: isCellSelected(column: .targetVideo, cell: row.targetCell),
-                onSelectCell: { handleCellClick(column: .targetVideo, rowIndex: row.index, cell: row.targetCell) },
-                onDropPayload: { handleCellDrop(providers: $0, column: .targetVideo, rowIndex: row.index) },
-                onDragProvider: { makeCellDragProvider(column: .targetVideo, rowIndex: row.index, cell: $0) },
-                dragBadgeCount: { dragCountForCell(column: .targetVideo, cell: $0) }
-            )
-            .frame(width: columnWidths.targetWidth, height: rowHeight)
-
-            // Per-row Status Indicator
-            ManualRowStatusCell(row: row, job: job)
-                .frame(width: statusColWidth, height: rowHeight, alignment: .center)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    model.selectedManualRowIndex = row.index
-                }
-        }
-        .background(rowBackground(index: row.index, isSelected: isSelectedRow, isHovered: isHoveredRow))
-        .overlay(alignment: .bottom) {
-            Rectangle()
-                .fill(Surfaces.hairline.opacity(0.45))
-                .frame(height: 1)
-        }
-        .onHover { hovering in
-            if hovering {
-                hoveredRowIndex = row.index
-            } else if hoveredRowIndex == row.index {
-                hoveredRowIndex = nil
-            }
-        }
-    }
-
-    private func rowBackground(index: Int, isSelected: Bool, isHovered: Bool) -> Color {
-        if isSelected {
-            return Palette.accent.opacity(0.14)
-        }
-        if isHovered {
-            return Surfaces.cardHover
-        }
-        return index.isMultiple(of: 2) ? Color.clear : Surfaces.card
-    }
-
-    private func emptyColumnsDropCanvas(
+    private func emptyColumnsCanvas(
         columnWidths: PairingColumnWidths,
         isExternal: Bool,
         canvasHeight: CGFloat
@@ -713,11 +942,10 @@ struct ManualBatchView: View {
             Color.clear
                 .frame(width: indexGutterWidth, height: canvasHeight)
 
-            ManualEmptyColumnDropTarget(
+            ManualEmptyColumnPlaceholder(
                 column: .sourceVideo,
                 prompt: "Drop source videos or folders",
-                onAdd: { model.manualPickFiles(for: .sourceVideo, undoManager: undoManager) },
-                onDropProviders: { handleCellDrop(providers: $0, column: .sourceVideo, rowIndex: nil) }
+                onAdd: { model.manualPickFiles(for: .sourceVideo, undoManager: undoManager) }
             )
             .frame(width: columnWidths.sourceWidth, height: canvasHeight)
 
@@ -726,11 +954,10 @@ struct ManualBatchView: View {
                 .frame(width: 1, height: canvasHeight)
 
             if isExternal {
-                ManualEmptyColumnDropTarget(
+                ManualEmptyColumnPlaceholder(
                     column: .sourceSubtitle,
                     prompt: "Drop .ass, .srt, .ssa files or folders",
-                    onAdd: { model.manualPickFiles(for: .sourceSubtitle, undoManager: undoManager) },
-                    onDropProviders: { handleCellDrop(providers: $0, column: .sourceSubtitle, rowIndex: nil) }
+                    onAdd: { model.manualPickFiles(for: .sourceSubtitle, undoManager: undoManager) }
                 )
                 .frame(width: columnWidths.subtitleWidth, height: canvasHeight)
 
@@ -739,11 +966,10 @@ struct ManualBatchView: View {
                     .frame(width: 1, height: canvasHeight)
             }
 
-            ManualEmptyColumnDropTarget(
+            ManualEmptyColumnPlaceholder(
                 column: .targetVideo,
                 prompt: "Drop target videos or folders",
-                onAdd: { model.manualPickFiles(for: .targetVideo, undoManager: undoManager) },
-                onDropProviders: { handleCellDrop(providers: $0, column: .targetVideo, rowIndex: nil) }
+                onAdd: { model.manualPickFiles(for: .targetVideo, undoManager: undoManager) }
             )
             .frame(width: columnWidths.targetWidth, height: canvasHeight)
 
@@ -751,49 +977,6 @@ struct ManualBatchView: View {
                 .frame(width: statusColWidth, height: canvasHeight)
         }
         .frame(height: canvasHeight)
-    }
-
-    private func trailingDropTail(
-        columnWidths: PairingColumnWidths,
-        isExternal: Bool,
-        tailHeight: CGFloat
-    ) -> some View {
-        HStack(spacing: 0) {
-            Color.clear
-                .frame(width: indexGutterWidth, height: tailHeight)
-
-            ManualColumnTailDropZone(
-                column: .sourceVideo,
-                onDropProviders: { handleCellDrop(providers: $0, column: .sourceVideo, rowIndex: nil) }
-            )
-            .frame(width: columnWidths.sourceWidth, height: tailHeight)
-
-            Rectangle()
-                .fill(Surfaces.hairline)
-                .frame(width: 1, height: tailHeight)
-
-            if isExternal {
-                ManualColumnTailDropZone(
-                    column: .sourceSubtitle,
-                    onDropProviders: { handleCellDrop(providers: $0, column: .sourceSubtitle, rowIndex: nil) }
-                )
-                .frame(width: columnWidths.subtitleWidth, height: tailHeight)
-
-                Rectangle()
-                    .fill(Surfaces.hairline)
-                    .frame(width: 1, height: tailHeight)
-            }
-
-            ManualColumnTailDropZone(
-                column: .targetVideo,
-                onDropProviders: { handleCellDrop(providers: $0, column: .targetVideo, rowIndex: nil) }
-            )
-            .frame(width: columnWidths.targetWidth, height: tailHeight)
-
-            Color.clear
-                .frame(width: statusColWidth, height: tailHeight)
-        }
-        .frame(height: tailHeight)
     }
 
     // MARK: - Selected Row Detail Strip (Warnings, Errors, Outputs)
@@ -847,12 +1030,14 @@ struct ManualBatchView: View {
                             model.revealInFinder(sub)
                         }
                         .controlSize(.small)
+                        .hoverDescription("Reveal the synced subtitle output file in Finder")
                     }
                     if let mkv = job.mergedFilepath {
                         Button("Reveal Merged MKV", systemImage: "film.stack") {
                             model.revealInFinder(mkv)
                         }
                         .controlSize(.small)
+                        .hoverDescription("Reveal the merged MKV output file in Finder")
                     }
                     Spacer()
                 }
@@ -860,12 +1045,7 @@ struct ManualBatchView: View {
         }
     }
 
-    // MARK: - Cell Selection, Drag & Drop Helpers
-
-    private func isCellSelected(column: ManualBatchColumnKind, cell: ManualBatchCell?) -> Bool {
-        guard let cell, model.selectedManualColumn == column else { return false }
-        return model.selectedManualCellIDs.contains(cell.id)
-    }
+    // MARK: - Cell Selection & Direct Pointer Intra-Column Reorder
 
     private func handleCellClick(column: ManualBatchColumnKind, rowIndex: Int, cell: ManualBatchCell?) {
         model.selectedManualRowIndex = rowIndex
@@ -895,270 +1075,181 @@ struct ManualBatchView: View {
         }
     }
 
-    private func dragCountForCell(column: ManualBatchColumnKind, cell: ManualBatchCell) -> Int {
-        if model.selectedManualColumn == column, model.selectedManualCellIDs.contains(cell.id) {
-            return max(1, model.selectedManualCellIDs.count)
-        }
-        return 1
-    }
-
-    private func makeCellDragProvider(
+    private func handlePointerReorderChanged(
         column: ManualBatchColumnKind,
         rowIndex: Int,
-        cell: ManualBatchCell
-    ) -> NSItemProvider {
-        let ids: [UUID]
+        cell: ManualBatchCell,
+        locationY: CGFloat
+    ) {
+        guard !model.isRunning else { return }
+        let ids: Set<UUID>
         if model.selectedManualColumn == column, model.selectedManualCellIDs.contains(cell.id) {
-            ids = model.manualColumns.cells(in: column)
-                .filter { model.selectedManualCellIDs.contains($0.id) }
-                .map(\.id)
+            ids = model.selectedManualCellIDs
         } else {
             ids = [cell.id]
         }
-
-        let payload = ManualDragTransfer(
-            kind: .columnReorder,
-            filePaths: cell.url.map { [$0.path] } ?? [],
-            sourceColumn: column,
+        let colCount = model.manualColumns.cells(in: column).count
+        dragCoordinator.updatePointerReorder(
+            column: column,
             cellIDs: ids,
-            sourceIndex: rowIndex
+            originIndex: rowIndex,
+            locationY: locationY,
+            columnCount: colCount,
+            rowHeight: rowHeight
         )
-        let provider = NSItemProvider()
-        if let data = try? JSONEncoder().encode(payload) {
-            provider.registerDataRepresentation(forTypeIdentifier: UTType.json.identifier, visibility: .all) { completion in
-                completion(data, nil)
-                return nil
-            }
-        }
-        return provider
     }
 
-    private func handleCellDrop(
-        providers: [NSItemProvider],
-        column: ManualBatchColumnKind,
-        rowIndex: Int?
-    ) -> Bool {
-        let onTransfer: @MainActor (ManualDragTransfer) -> Void = { transfer in
-            switch transfer.kind {
-            case .browserFiles:
-                let urls = transfer.filePaths.map { URL(fileURLWithPath: $0) }
-                model.manualInsert(
-                    urls: urls,
-                    into: column,
-                    at: rowIndex,
-                    expandDirectories: true,
-                    undoManager: undoManager
-                )
-            case .columnReorder:
-                if transfer.sourceColumn == column {
-                    let dest = rowIndex ?? model.manualColumns.cells(in: column).count
-                    model.manualMoveCells(
-                        in: column,
-                        ids: Set(transfer.cellIDs),
-                        to: dest,
-                        undoManager: undoManager
-                    )
-                } else if !transfer.filePaths.isEmpty {
-                    let urls = transfer.filePaths.map { URL(fileURLWithPath: $0) }
-                    model.manualInsert(
-                        urls: urls,
-                        into: column,
-                        at: rowIndex,
-                        expandDirectories: false,
-                        undoManager: undoManager
-                    )
-                }
-            }
+    private func handlePointerReorderEnded(column: ManualBatchColumnKind) {
+        guard dragCoordinator.reorderColumn == column else {
+            dragCoordinator.endAllDrags()
+            return
         }
+        let ids = dragCoordinator.reorderCellIDs
+        let targetSlot = dragCoordinator.dropInsertIndex
+        let origin = dragCoordinator.reorderOriginIndex
+        dragCoordinator.endAllDrags()
 
-        // 1. Check for internal ManualDragTransfer JSON (from File Browser or Column Reorder)
-        if let jsonProvider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.json.identifier) }) {
-            jsonProvider.loadDataRepresentation(forTypeIdentifier: UTType.json.identifier) { data, _ in
-                guard let data,
-                      let transfer = try? JSONDecoder().decode(ManualDragTransfer.self, from: data),
-                      transfer.sushiManualTransfer else { return }
-                Task { @MainActor in
-                    onTransfer(transfer)
-                }
-            }
-            return true
+        guard !ids.isEmpty, let dest = targetSlot else { return }
+        if ids.count == 1, let origin, (dest == origin || dest == origin + 1) {
+            return
         }
-
-        // 2. External drop from macOS Finder (files or folders)
-        let urlProviders = providers.filter { $0.canLoadObject(ofClass: URL.self) }
-        guard !urlProviders.isEmpty else { return false }
-        let onURLs: @MainActor ([URL]) -> Void = { urls in
-            model.manualInsert(
-                urls: urls,
-                into: column,
-                at: rowIndex,
-                expandDirectories: true,
-                undoManager: undoManager
-            )
-        }
-        let collector = ManualURLDropCollector(total: urlProviders.count, completion: onURLs)
-        for provider in urlProviders {
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                Task { @MainActor in collector.record(url) }
-            }
-        }
-        return true
+        model.manualMoveCells(in: column, ids: ids, to: dest, undoManager: undoManager)
     }
 }
 
-// MARK: - Column 1: Lightweight Native File Browser
+// MARK: - Inverted-L (Γ) Top Horizontal File Browser Navigation Bar
 
-private struct ManualFileBrowserPane: View {
+private struct ManualFileBrowserNavBar: View {
     @Environment(AppModel.self) private var model
-    let headerHeight: CGFloat
+    let height: CGFloat
     @Binding var isDropTargeted: Bool
-    let onAddFilesToColumn: ([URL], ManualBatchColumnKind) -> Void
-
-    private struct FlattenedNode: Identifiable {
-        let entry: FileBrowserEntry
-        let depth: Int
-        var id: String { entry.id }
-    }
 
     var body: some View {
         @Bindable var model = model
-        let visibleNodes = flattenedVisibleNodes()
 
-        VStack(spacing: 0) {
-            // Browser header (48 pt height matching pairing column headers)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: Space.xs) {
-                    Text("File Browser")
-                        .font(.callout.weight(.semibold))
-                        .lineLimit(1)
-                    Spacer(minLength: Space.xs)
-                    Button("Choose…") {
-                        model.chooseManualBrowserFolder()
-                    }
-                    .controlSize(.mini)
-                    .help("Choose a folder to browse")
+        HStack(spacing: Space.sm) {
+            // Back / Forward / Parent Up navigation cluster
+            HStack(spacing: Space.xs) {
+                Button {
+                    model.navigateManualBrowserBack()
+                } label: {
+                    Image(systemName: "chevron.left")
+                        .font(.callout.weight(.medium))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(model.manualBrowserHistory.canGoBack ? .primary : .tertiary)
+                .disabled(!model.manualBrowserHistory.canGoBack)
+                .hoverDescription("Go back to the previous folder")
 
+                Button {
+                    model.navigateManualBrowserForward()
+                } label: {
+                    Image(systemName: "chevron.right")
+                        .font(.callout.weight(.medium))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(model.manualBrowserHistory.canGoForward ? .primary : .tertiary)
+                .disabled(!model.manualBrowserHistory.canGoForward)
+                .hoverDescription("Go forward to the next folder")
+
+                Button {
+                    model.navigateManualBrowserUp()
+                } label: {
+                    Image(systemName: "arrow.up")
+                        .font(.callout.weight(.medium))
+                        .frame(width: 24, height: 24)
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(model.manualBrowserHistory.canGoUp ? .primary : .tertiary)
+                .disabled(!model.manualBrowserHistory.canGoUp)
+                .hoverDescription("Open the parent folder")
+            }
+
+            Rectangle()
+                .fill(Surfaces.hairline)
+                .frame(width: 1, height: 16)
+
+            // Wide clickable Breadcrumb Path
+            breadcrumbPathView
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+            // Choose Folder & Refresh
+            Button("Choose…", systemImage: "folder.badge.plus") {
+                model.chooseManualBrowserFolder()
+            }
+            .controlSize(.small)
+            .fixedSize()
+            .hoverDescription("Choose a folder to open in the File Browser")
+
+            Button {
+                model.refreshManualBrowser()
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.callout)
+                    .frame(width: 24, height: 24)
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(model.manualBrowserRootURL == nil ? .tertiary : .secondary)
+            .disabled(model.manualBrowserRootURL == nil)
+            .hoverDescription("Refresh the current folder listing")
+
+            // Compact Search box
+            HStack(spacing: Space.xs) {
+                Image(systemName: "magnifyingglass")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField("Filter files…", text: $model.manualBrowserSearch)
+                    .textFieldStyle(.plain)
+                    .font(.callout)
+                if !model.manualBrowserSearch.isEmpty {
                     Button {
-                        model.refreshManualBrowser()
+                        model.manualBrowserSearch = ""
                     } label: {
-                        Image(systemName: "arrow.clockwise")
-                            .font(.caption2)
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .disabled(model.manualBrowserRootURL == nil)
-                    .help("Refresh current folder")
-                }
-
-                breadcrumbBar
-            }
-            .padding(.horizontal, Space.sm)
-            .padding(.vertical, Space.xs)
-            .frame(height: headerHeight)
-            .background(Surfaces.card)
-
-            Divider()
-
-            // Search box + All / Video / Subtitles filter pills
-            VStack(spacing: Space.xs) {
-                HStack(spacing: Space.xs) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                    TextField("Filter files…", text: $model.manualBrowserSearch)
-                        .textFieldStyle(.plain)
-                        .font(.caption)
-                    if !model.manualBrowserSearch.isEmpty {
-                        Button {
-                            model.manualBrowserSearch = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                        .help("Clear filter text")
-                    }
-                }
-                .padding(.horizontal, Space.xs)
-                .padding(.vertical, Space.xs)
-                .background(Surfaces.card, in: RoundedRectangle(cornerRadius: Radius.xs, style: .continuous))
-                .overlay(
-                    RoundedRectangle(cornerRadius: Radius.xs, style: .continuous)
-                        .strokeBorder(Surfaces.hairline, lineWidth: 1)
-                )
-
-                HStack(spacing: Space.xs) {
-                    ForEach(FileBrowserFilter.allCases) { filter in
-                        let selected = model.manualBrowserFilter == filter
-                        Button(filter.displayName) {
-                            model.manualBrowserFilter = filter
-                        }
-                        .buttonStyle(.plain)
-                        .font(.caption2.weight(selected ? .semibold : .regular))
-                        .foregroundStyle(selected ? Palette.onAccent : .primary)
-                        .padding(.horizontal, Space.sm)
-                        .padding(.vertical, 2)
-                        .background(selected ? Palette.accent : Surfaces.card, in: Capsule())
-                    }
-                    Spacer(minLength: 0)
+                    .hoverDescription("Clear file filter text")
                 }
             }
             .padding(.horizontal, Space.sm)
             .padding(.vertical, Space.xs)
+            .frame(width: 144)
+            .background(.background, in: RoundedRectangle(cornerRadius: Radius.xs, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: Radius.xs, style: .continuous)
+                    .strokeBorder(Surfaces.hairline, lineWidth: 1)
+            )
+            .hoverDescription("Filter visible files in the File Browser by name")
 
-            Divider()
-
-            // Independent scrollable file tree
-            if model.manualBrowserRootURL == nil {
-                VStack(spacing: Space.sm) {
-                    Image(systemName: "folder.badge.plus")
-                        .font(.title2)
-                        .foregroundStyle(.secondary)
-                    Text("Drop a folder here or choose one to browse")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                    Button("Choose Folder…") {
-                        model.chooseManualBrowserFolder()
+            // All / Video / Subtitles filter pills
+            HStack(spacing: Space.xs) {
+                ForEach(FileBrowserFilter.allCases) { filter in
+                    let selected = model.manualBrowserFilter == filter
+                    Button(filter.displayName) {
+                        model.manualBrowserFilter = filter
                     }
-                    .controlSize(.small)
-                }
-                .padding(Space.md)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if visibleNodes.isEmpty {
-                VStack(spacing: Space.xs) {
-                    Image(systemName: "doc.text.magnifyingglass")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                    Text(model.manualBrowserSearch.isEmpty ? "No matching files" : "No results for \"\(model.manualBrowserSearch)\"")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .multilineTextAlignment(.center)
-                }
-                .padding(Space.md)
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        ForEach(visibleNodes) { node in
-                            browserRow(node: node, allVisible: visibleNodes)
-                        }
-                    }
+                    .buttonStyle(.plain)
+                    .font(.caption.weight(selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? Palette.onAccent : .primary)
+                    .padding(.horizontal, Space.sm)
                     .padding(.vertical, Space.xs)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .onKeyPress(characters: CharacterSet(charactersIn: "aA"), phases: .down) { press in
-                    guard press.modifiers.contains(.command) else { return .ignored }
-                    selectAllVisibleFiles(in: visibleNodes)
-                    return .handled
+                    .background(selected ? Palette.accent : Surfaces.cardHover, in: Capsule())
+                    .hoverDescription(filterHelpText(for: filter))
                 }
             }
+            .fixedSize()
         }
-        .background(isDropTargeted ? Palette.accent.opacity(0.08) : Color.clear)
+        .padding(.horizontal, Space.md)
+        .frame(height: height)
+        .frame(maxWidth: .infinity)
+        .background(isDropTargeted ? Palette.accent.opacity(0.10) : Surfaces.card)
         .overlay {
             if isDropTargeted {
-                RoundedRectangle(cornerRadius: Radius.xs, style: .continuous)
+                Rectangle()
                     .strokeBorder(Palette.accent, lineWidth: 2)
             }
         }
@@ -1179,60 +1270,59 @@ private struct ManualFileBrowserPane: View {
         }
     }
 
+    private func filterHelpText(for filter: FileBrowserFilter) -> String {
+        switch filter {
+        case .all: "Show all files and folders in the File Browser"
+        case .video: "Show only supported video and audio media files"
+        case .subtitles: "Show only .ass, .srt, and .ssa subtitle files"
+        }
+    }
+
     @ViewBuilder
-    private var breadcrumbBar: some View {
+    private var breadcrumbPathView: some View {
         if let root = model.manualBrowserRootURL {
-            let canGoUp = root.deletingLastPathComponent().path != root.path
             let segments = breadcrumbSegments(for: root)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.xs) {
+                    Image(systemName: "folder.fill")
+                        .font(.caption)
+                        .foregroundStyle(Palette.accentText)
 
-            HStack(spacing: Space.xs) {
-                Button {
-                    model.navigateManualBrowserUp()
-                } label: {
-                    HStack(spacing: 2) {
-                        Image(systemName: "arrow.turn.left.up")
-                            .font(.caption2)
-                        Text("..")
-                            .font(.caption2.monospaced())
-                    }
-                }
-                .buttonStyle(.plain)
-                .foregroundStyle(canGoUp ? .secondary : .tertiary)
-                .disabled(!canGoUp)
-                .help("Go to parent folder")
-
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 2) {
-                        ForEach(Array(segments.enumerated()), id: \.offset) { idx, seg in
-                            if idx > 0 {
-                                Image(systemName: "chevron.right")
-                                    .font(.caption2)
-                                    .foregroundStyle(.tertiary)
-                            }
-                            Button(seg.name) {
-                                model.setManualBrowserRoot(seg.url)
-                            }
-                            .buttonStyle(.plain)
-                            .font(.caption2.weight(idx == segments.count - 1 ? .semibold : .regular))
-                            .foregroundStyle(idx == segments.count - 1 ? .primary : .secondary)
-                            .lineLimit(1)
-                            .help(seg.url.path)
+                    ForEach(Array(segments.enumerated()), id: \.offset) { idx, seg in
+                        if idx > 0 {
+                            Image(systemName: "chevron.right")
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
                         }
+                        Button(seg.name) {
+                            model.setManualBrowserRoot(seg.url)
+                        }
+                        .buttonStyle(.plain)
+                        .font(.callout.weight(idx == segments.count - 1 ? .semibold : .regular))
+                        .foregroundStyle(idx == segments.count - 1 ? .primary : .secondary)
+                        .lineLimit(1)
+                        .hoverDescription("Open \(seg.url.path)")
                     }
                 }
             }
         } else {
-            Text("No folder selected")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
+            HStack(spacing: Space.xs) {
+                Image(systemName: "folder")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                Text("Drop a folder here or click Choose… to browse files")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
         }
     }
 
     private func breadcrumbSegments(for url: URL) -> [(name: String, url: URL)] {
         var list: [(String, URL)] = []
         var cursor = url.standardizedFileURL
-        for _ in 0..<4 {
+        for _ in 0..<6 {
             let name = cursor.lastPathComponent
             if name == "/" || name.isEmpty {
                 if list.isEmpty {
@@ -1246,6 +1336,100 @@ private struct ManualFileBrowserPane: View {
             cursor = parent
         }
         return list.reversed()
+    }
+}
+
+// MARK: - Inverted-L (Γ) Left Vertical File List (Type-Locked Multi-Selection)
+
+private struct ManualFileBrowserListPane: View {
+    @Environment(AppModel.self) private var model
+    let dragCoordinator: ManualDragCoordinator
+    @Binding var isDropTargeted: Bool
+    let onAddFilesToColumn: ([URL], ManualBatchColumnKind) -> Void
+
+    private struct FlattenedNode: Identifiable {
+        let entry: FileBrowserEntry
+        let depth: Int
+        var id: String { entry.id }
+    }
+
+    var body: some View {
+        let visibleNodes = flattenedVisibleNodes()
+        let visibleEntries = visibleNodes.map(\.entry)
+
+        Group {
+            if model.manualBrowserRootURL == nil {
+                VStack(spacing: Space.sm) {
+                    Image(systemName: "folder.badge.plus")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                    Text("Drop a folder here or choose one above")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                    Button("Choose Folder…") {
+                        model.chooseManualBrowserFolder()
+                    }
+                    .controlSize(.small)
+                    .hoverDescription("Choose a folder to browse in Manual Batch")
+                }
+                .padding(Space.md)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if visibleNodes.isEmpty {
+                VStack(spacing: Space.xs) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.title3)
+                        .foregroundStyle(.secondary)
+                    Text(model.manualBrowserSearch.isEmpty ? "No matching files" : "No results for \"\(model.manualBrowserSearch)\"")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                }
+                .padding(Space.md)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        ForEach(visibleNodes) { node in
+                            browserRow(node: node, visibleEntries: visibleEntries)
+                        }
+                    }
+                    .padding(.vertical, Space.xs)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onKeyPress(characters: CharacterSet(charactersIn: "aA"), phases: .down) { press in
+                    guard press.modifiers.contains(.command) else { return .ignored }
+                    model.manualBrowserSelection.selectAll(
+                        visibleEntries: visibleEntries,
+                        activeFilter: model.manualBrowserFilter
+                    )
+                    return .handled
+                }
+            }
+        }
+        // Shares Surfaces.card tint seamlessly with the top navigation bar to form the Γ frame
+        .background(isDropTargeted ? Palette.accent.opacity(0.10) : Surfaces.card)
+        .overlay {
+            if isDropTargeted {
+                Rectangle()
+                    .strokeBorder(Palette.accent, lineWidth: 2)
+            }
+        }
+        .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
+            guard let first = providers.first(where: { $0.canLoadObject(ofClass: URL.self) }) else {
+                return false
+            }
+            let onRoot: @MainActor (URL) -> Void = { droppedURL in
+                model.setManualBrowserRoot(droppedURL)
+            }
+            _ = first.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
+                Task { @MainActor in
+                    onRoot(url)
+                }
+            }
+            return true
+        }
     }
 
     private func flattenedVisibleNodes() -> [FlattenedNode] {
@@ -1266,9 +1450,9 @@ private struct ManualFileBrowserPane: View {
         return result
     }
 
-    private func browserRow(node: FlattenedNode, allVisible: [FlattenedNode]) -> some View {
+    private func browserRow(node: FlattenedNode, visibleEntries: [FileBrowserEntry]) -> some View {
         let entry = node.entry
-        let isSelected = model.manualBrowserSelectedPaths.contains(entry.id)
+        let isSelected = model.manualBrowserSelection.selectedPaths.contains(entry.id)
         let isExpanded = model.manualBrowserExpandedPaths.contains(entry.id)
         let indent = CGFloat(node.depth) * Space.md
 
@@ -1279,10 +1463,11 @@ private struct ManualFileBrowserPane: View {
                 } label: {
                     Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
                         .font(.caption2)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(isSelected ? AnyShapeStyle(Palette.onAccent) : AnyShapeStyle(.secondary))
                         .frame(width: 12, height: 16)
                 }
                 .buttonStyle(.plain)
+                .hoverDescription(isExpanded ? "Collapse folder" : "Expand folder")
             } else {
                 Color.clear.frame(width: 12, height: 16)
             }
@@ -1297,49 +1482,64 @@ private struct ManualFileBrowserPane: View {
                 .foregroundStyle(isSelected ? Palette.onAccent : .primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .help(entry.url.path)
 
-            Spacer(minLength: 0)
+            Spacer(minLength: Space.xs)
+
+            if let hint = entry.subtleDetailHint {
+                Text(hint)
+                    .font(.caption2.monospacedDigit())
+                    .foregroundStyle(isSelected ? AnyShapeStyle(Palette.onAccent.opacity(0.85)) : AnyShapeStyle(.tertiary))
+                    .lineLimit(1)
+                    .fixedSize()
+            }
         }
         .padding(.leading, Space.xs + indent)
-        .padding(.trailing, Space.xs)
+        .padding(.trailing, Space.sm)
         .frame(height: 24)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(isSelected ? Palette.accent : Color.clear, in: RoundedRectangle(cornerRadius: Radius.xs, style: .continuous))
         .padding(.horizontal, Space.xs)
         .contentShape(Rectangle())
+        .help(entry.name)
         .onTapGesture(count: 2) {
             if entry.isDirectory {
                 model.setManualBrowserRoot(entry.url)
             }
         }
         .onTapGesture(count: 1) {
-            handleBrowserSelection(entry: entry, allVisible: allVisible)
+            handleBrowserSelection(entry: entry, visibleEntries: visibleEntries)
         }
         .onDrag {
-            makeBrowserDragProvider(for: entry, allVisible: allVisible)
+            makeBrowserDragProvider(for: entry, visibleEntries: visibleEntries)
         } preview: {
-            let items = targetURLsForAction(clicked: entry, allVisible: allVisible)
-            DragBadgePreview(count: items.count, title: entry.name)
+            let payload = model.manualBrowserSelection.dragPayload(for: entry, visibleEntries: visibleEntries)
+            DragBadgePreview(count: payload.urls.count, title: entry.name)
         }
         .contextMenu {
-            let urls = targetURLsForAction(clicked: entry, allVisible: allVisible)
+            let payload = model.manualBrowserSelection.dragPayload(for: entry, visibleEntries: visibleEntries)
+            let urls = payload.urls
             let suffix = urls.count > 1 ? " (\(urls.count))" : ""
 
-            Button("Add to Source Video\(suffix)") {
-                onAddFilesToColumn(urls, .sourceVideo)
+            if payload.kind == nil || payload.kind == .media || entry.isDirectory {
+                Button("Add to Source Video\(suffix)") {
+                    onAddFilesToColumn(urls, .sourceVideo)
+                }
+                .disabled(model.isRunning)
             }
-            .disabled(model.isRunning)
 
-            Button("Add to Source Subtitles\(suffix)") {
-                onAddFilesToColumn(urls, .sourceSubtitle)
+            if payload.kind == nil || payload.kind == .subtitle || entry.isDirectory {
+                Button("Add to Source Subtitles\(suffix)") {
+                    onAddFilesToColumn(urls, .sourceSubtitle)
+                }
+                .disabled(model.isRunning)
             }
-            .disabled(model.isRunning)
 
-            Button("Add to Target Video\(suffix)") {
-                onAddFilesToColumn(urls, .targetVideo)
+            if payload.kind == nil || payload.kind == .media || entry.isDirectory {
+                Button("Add to Target Video\(suffix)") {
+                    onAddFilesToColumn(urls, .targetVideo)
+                }
+                .disabled(model.isRunning)
             }
-            .disabled(model.isRunning)
 
             Divider()
 
@@ -1349,8 +1549,11 @@ private struct ManualFileBrowserPane: View {
                 }
             }
 
-            Button("Select All Files") {
-                selectAllVisibleFiles(in: allVisible)
+            Button("Select All Matching Files") {
+                model.manualBrowserSelection.selectAll(
+                    visibleEntries: visibleEntries,
+                    activeFilter: model.manualBrowserFilter
+                )
             }
 
             Button("Reveal in Finder") {
@@ -1361,68 +1564,35 @@ private struct ManualFileBrowserPane: View {
 
     private func iconColor(for entry: FileBrowserEntry, isSelected: Bool) -> AnyShapeStyle {
         if isSelected { return AnyShapeStyle(Palette.onAccent) }
-        if entry.isDirectory { return AnyShapeStyle(Palette.accentText) }
-        if entry.isSubtitle { return AnyShapeStyle(Surfaces.statusRunning) }
-        if entry.isMedia { return AnyShapeStyle(.secondary) }
-        return AnyShapeStyle(.tertiary)
+        switch entry.kind {
+        case .folder: return AnyShapeStyle(Palette.accentText)
+        case .subtitle: return AnyShapeStyle(Surfaces.statusRunning)
+        case .media: return AnyShapeStyle(.secondary)
+        case .other: return AnyShapeStyle(.tertiary)
+        }
     }
 
-    private func handleBrowserSelection(entry: FileBrowserEntry, allVisible: [FlattenedNode]) {
+    private func handleBrowserSelection(entry: FileBrowserEntry, visibleEntries: [FileBrowserEntry]) {
         let flags = NSEvent.modifierFlags
-        if flags.contains(.command) {
-            if model.manualBrowserSelectedPaths.contains(entry.id) {
-                model.manualBrowserSelectedPaths.remove(entry.id)
-            } else {
-                model.manualBrowserSelectedPaths.insert(entry.id)
-                model.manualBrowserAnchorPath = entry.id
-            }
-        } else if flags.contains(.shift),
-                  let anchor = model.manualBrowserAnchorPath,
-                  let anchorIdx = allVisible.firstIndex(where: { $0.id == anchor }),
-                  let clickIdx = allVisible.firstIndex(where: { $0.id == entry.id }) {
-            let lo = min(anchorIdx, clickIdx)
-            let hi = max(anchorIdx, clickIdx)
-            model.manualBrowserSelectedPaths = Set(allVisible[lo...hi].map(\.id))
+        if flags.contains(.shift) {
+            model.manualBrowserSelection.shiftClick(entry, visibleEntries: visibleEntries)
+        } else if flags.contains(.command) {
+            model.manualBrowserSelection.commandClick(entry)
         } else {
-            model.manualBrowserSelectedPaths = [entry.id]
-            model.manualBrowserAnchorPath = entry.id
+            model.manualBrowserSelection.plainClick(entry)
         }
     }
 
-    private func selectAllVisibleFiles(in allVisible: [FlattenedNode]) {
-        let files = allVisible.filter { !$0.entry.isDirectory }
-        if !files.isEmpty {
-            model.manualBrowserSelectedPaths = Set(files.map(\.id))
-            model.manualBrowserAnchorPath = files.first?.id
-        } else {
-            model.manualBrowserSelectedPaths = Set(allVisible.map(\.id))
-            model.manualBrowserAnchorPath = allVisible.first?.id
-        }
-    }
+    private func makeBrowserDragProvider(for entry: FileBrowserEntry, visibleEntries: [FileBrowserEntry]) -> NSItemProvider {
+        let payload = model.manualBrowserSelection.dragPayload(for: entry, visibleEntries: visibleEntries)
+        dragCoordinator.beginBrowserDrag(urls: payload.urls, kind: payload.kind)
 
-    private func targetURLsForAction(clicked: FileBrowserEntry, allVisible: [FlattenedNode]) -> [URL] {
-        if model.manualBrowserSelectedPaths.contains(clicked.id) {
-            let ordered = allVisible
-                .filter { model.manualBrowserSelectedPaths.contains($0.id) }
-                .map(\.entry.url)
-            if !ordered.isEmpty {
-                return ordered
-            }
-        }
-        return [clicked.url]
-    }
-
-    private func makeBrowserDragProvider(for entry: FileBrowserEntry, allVisible: [FlattenedNode]) -> NSItemProvider {
-        let urls = targetURLsForAction(clicked: entry, allVisible: allVisible)
-        let payload = ManualDragTransfer(
-            kind: .browserFiles,
-            filePaths: urls.map(\.path),
-            sourceColumn: nil,
-            cellIDs: [],
-            sourceIndex: nil
+        let transfer = ManualDragTransfer(
+            filePaths: payload.urls.map(\.path),
+            itemKind: payload.kind
         )
         let provider = NSItemProvider()
-        if let data = try? JSONEncoder().encode(payload) {
+        if let data = try? JSONEncoder().encode(transfer) {
             provider.registerDataRepresentation(forTypeIdentifier: UTType.json.identifier, visibility: .all) { completion in
                 completion(data, nil)
                 return nil
@@ -1432,7 +1602,132 @@ private struct ManualFileBrowserPane: View {
     }
 }
 
-// MARK: - Pairing Cell View (Filled, Blank Alignment Slot, or Shorter-Column Empty Slot)
+// MARK: - Paired Row View (Isolated Per-Row Hover State)
+
+private struct ManualPairedRowView: View {
+    @Environment(AppModel.self) private var model
+
+    let row: ManualBatchPairRow
+    let job: EpisodeJob?
+    let sourceWidth: CGFloat
+    let subtitleWidth: CGFloat
+    let targetWidth: CGFloat
+    let isExternal: Bool
+    let indexGutterWidth: CGFloat
+    let statusColWidth: CGFloat
+    let rowHeight: CGFloat
+    let dragCoordinator: ManualDragCoordinator
+    let onSelectCell: (ManualBatchColumnKind, ManualBatchCell?) -> Void
+    let onSelectRow: () -> Void
+    let onPointerReorderChanged: (ManualBatchColumnKind, ManualBatchCell, CGFloat) -> Void
+    let onPointerReorderEnded: (ManualBatchColumnKind) -> Void
+
+    @State private var isHovered = false
+
+    var body: some View {
+        let isSelectedRow = model.selectedManualRowIndex == row.index
+
+        HStack(spacing: 0) {
+            // Row index gutter (#1, #2, #3...)
+            Text("#\(row.index + 1)")
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(isSelectedRow ? Palette.accentText : .secondary)
+                .frame(width: indexGutterWidth, height: rowHeight, alignment: .center)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onSelectRow)
+                .help("Pair #\(row.index + 1)")
+
+            // Source Video cell
+            ManualPairingCellView(
+                column: .sourceVideo,
+                rowIndex: row.index,
+                cell: row.sourceCell,
+                job: job,
+                rowHeight: rowHeight,
+                isSelectedCell: isCellSelected(column: .sourceVideo, cell: row.sourceCell),
+                dragCoordinator: dragCoordinator,
+                onSelectCell: { onSelectCell(.sourceVideo, row.sourceCell) },
+                onPointerReorderChanged: { cell, y in onPointerReorderChanged(.sourceVideo, cell, y) },
+                onPointerReorderEnded: { onPointerReorderEnded(.sourceVideo) }
+            )
+            .frame(width: sourceWidth, height: rowHeight)
+
+            Rectangle()
+                .fill(Surfaces.hairline)
+                .frame(width: 1, height: rowHeight)
+
+            // Source Subtitles cell (External mode only)
+            if isExternal {
+                ManualPairingCellView(
+                    column: .sourceSubtitle,
+                    rowIndex: row.index,
+                    cell: row.subtitleCell,
+                    job: job,
+                    rowHeight: rowHeight,
+                    isSelectedCell: isCellSelected(column: .sourceSubtitle, cell: row.subtitleCell),
+                    dragCoordinator: dragCoordinator,
+                    onSelectCell: { onSelectCell(.sourceSubtitle, row.subtitleCell) },
+                    onPointerReorderChanged: { cell, y in onPointerReorderChanged(.sourceSubtitle, cell, y) },
+                    onPointerReorderEnded: { onPointerReorderEnded(.sourceSubtitle) }
+                )
+                .frame(width: subtitleWidth, height: rowHeight)
+
+                Rectangle()
+                    .fill(Surfaces.hairline)
+                    .frame(width: 1, height: rowHeight)
+            }
+
+            // Target Video cell
+            ManualPairingCellView(
+                column: .targetVideo,
+                rowIndex: row.index,
+                cell: row.targetCell,
+                job: job,
+                rowHeight: rowHeight,
+                isSelectedCell: isCellSelected(column: .targetVideo, cell: row.targetCell),
+                dragCoordinator: dragCoordinator,
+                onSelectCell: { onSelectCell(.targetVideo, row.targetCell) },
+                onPointerReorderChanged: { cell, y in onPointerReorderChanged(.targetVideo, cell, y) },
+                onPointerReorderEnded: { onPointerReorderEnded(.targetVideo) }
+            )
+            .frame(width: targetWidth, height: rowHeight)
+
+            // Per-row Status Indicator
+            ManualRowStatusCell(row: row, job: job)
+                .frame(width: statusColWidth, height: rowHeight, alignment: .center)
+                .contentShape(Rectangle())
+                .onTapGesture(perform: onSelectRow)
+        }
+        .background(rowBackground(isSelected: isSelectedRow, isHovered: isHovered))
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Surfaces.hairline.opacity(0.45))
+                .frame(height: 1)
+        }
+        .onHover { hovering in
+            if isHovered != hovering {
+                isHovered = hovering
+            }
+        }
+    }
+
+    private func isCellSelected(column: ManualBatchColumnKind, cell: ManualBatchCell?) -> Bool {
+        guard let cell, model.selectedManualColumn == column else { return false }
+        return model.selectedManualCellIDs.contains(cell.id)
+    }
+
+    private func rowBackground(isSelected: Bool, isHovered: Bool) -> Color {
+        if isSelected {
+            return Palette.accent.opacity(0.14)
+        }
+        if isHovered {
+            return Surfaces.cardHover
+        }
+        return row.index.isMultiple(of: 2) ? Color.clear : Surfaces.card
+    }
+}
+
+// MARK: - Pairing Cell View (Direct Pointer Reordering + Full-Filename Hover)
 
 private struct ManualPairingCellView: View {
     @Environment(AppModel.self) private var model
@@ -1444,12 +1739,11 @@ private struct ManualPairingCellView: View {
     let job: EpisodeJob?
     let rowHeight: CGFloat
     let isSelectedCell: Bool
+    let dragCoordinator: ManualDragCoordinator
     let onSelectCell: () -> Void
-    let onDropPayload: ([NSItemProvider]) -> Bool
-    let onDragProvider: (ManualBatchCell) -> NSItemProvider
-    let dragBadgeCount: (ManualBatchCell) -> Int
+    let onPointerReorderChanged: (ManualBatchCell, CGFloat) -> Void
+    let onPointerReorderEnded: () -> Void
 
-    @State private var isDropTargeted = false
     @State private var isHovered = false
 
     var body: some View {
@@ -1463,27 +1757,23 @@ private struct ManualPairingCellView: View {
             }
         }
         .frame(maxWidth: .infinity, minHeight: rowHeight, maxHeight: rowHeight, alignment: .leading)
-        .overlay(alignment: .top) {
-            if isDropTargeted {
-                Rectangle()
-                    .fill(Palette.accent)
-                    .frame(height: 2)
-            }
-        }
-        .background(isDropTargeted ? Palette.accent.opacity(0.10) : Color.clear)
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelectCell)
-        .onHover { isHovered = $0 }
-        .onDrop(of: [.json, .fileURL], isTargeted: $isDropTargeted, perform: onDropPayload)
+        .onHover { hovering in
+            if isHovered != hovering {
+                isHovered = hovering
+            }
+        }
     }
 
     private func filledCellView(cell: ManualBatchCell, url: URL) -> some View {
         let colCount = model.manualColumns.cells(in: column).count
+        let isDraggingThis = dragCoordinator.isCellBeingReordered(column: column, cellID: cell.id)
 
         return HStack(spacing: Space.xs) {
             Image(systemName: "line.3.horizontal")
                 .font(.caption2)
-                .foregroundStyle(isHovered ? .secondary : .tertiary)
+                .foregroundStyle(isHovered || isDraggingThis ? .secondary : .tertiary)
                 .frame(width: 12)
 
             Text(url.lastPathComponent)
@@ -1491,24 +1781,25 @@ private struct ManualPairingCellView: View {
                 .foregroundStyle(.primary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-                .help(url.path)
 
             Spacer(minLength: 2)
 
-            if isHovered && !model.isRunning {
+            if isHovered && !model.isRunning && !dragCoordinator.isAnyDragActive {
                 Button {
                     model.manualRemoveCell(in: column, at: rowIndex, undoManager: undoManager)
                 } label: {
                     Image(systemName: "xmark")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
+                        .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.plain)
-                .help("Remove this item from \(column.title)")
+                .hoverDescription("Remove this item from \(column.title)")
             }
         }
         .padding(.horizontal, Space.sm)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .opacity(isDraggingThis ? 0.45 : 1.0)
         .overlay {
             if isSelectedCell {
                 RoundedRectangle(cornerRadius: Radius.xs, style: .continuous)
@@ -1516,11 +1807,18 @@ private struct ManualPairingCellView: View {
                     .padding(2)
             }
         }
-        .onDrag {
-            onDragProvider(cell)
-        } preview: {
-            DragBadgePreview(count: dragBadgeCount(cell), title: url.lastPathComponent)
-        }
+        .contentShape(Rectangle())
+        .help(url.lastPathComponent)
+        // Direct pointer drag gesture for instant zero-lag intra-column reordering (no NSItemProvider round-trip)
+        .gesture(
+            DragGesture(minimumDistance: 4, coordinateSpace: .named("pairingRowsScroll"))
+                .onChanged { value in
+                    onPointerReorderChanged(cell, value.location.y)
+                }
+                .onEnded { _ in
+                    onPointerReorderEnded()
+                }
+        )
         .contextMenu {
             Button("Move Up") {
                 model.manualMoveUp(in: column, at: rowIndex, undoManager: undoManager)
@@ -1589,6 +1887,7 @@ private struct ManualPairingCellView: View {
 
     private func blankSlotView(cell: ManualBatchCell) -> some View {
         let colCount = model.manualColumns.cells(in: column).count
+        let isDraggingThis = dragCoordinator.isCellBeingReordered(column: column, cellID: cell.id)
 
         return HStack(spacing: Space.xs) {
             Image(systemName: "rectangle.dashed")
@@ -1599,20 +1898,22 @@ private struct ManualPairingCellView: View {
                 .foregroundStyle(Surfaces.statusWarning)
                 .lineLimit(1)
             Spacer(minLength: 0)
-            if isHovered && !model.isRunning {
+            if isHovered && !model.isRunning && !dragCoordinator.isAnyDragActive {
                 Button {
                     model.manualRemoveCell(in: column, at: rowIndex, undoManager: undoManager)
                 } label: {
                     Image(systemName: "xmark")
                         .font(.caption2.weight(.semibold))
                         .foregroundStyle(.secondary)
+                        .frame(width: 16, height: 16)
                 }
                 .buttonStyle(.plain)
-                .help("Remove blank alignment slot")
+                .hoverDescription("Remove blank alignment slot")
             }
         }
         .padding(.horizontal, Space.sm)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .opacity(isDraggingThis ? 0.45 : 1.0)
         .background(
             Surfaces.statusWarning.opacity(0.06),
             in: RoundedRectangle(cornerRadius: Radius.xs, style: .continuous)
@@ -1626,11 +1927,17 @@ private struct ManualPairingCellView: View {
         )
         .padding(.horizontal, Space.xs)
         .padding(.vertical, 2)
-        .onDrag {
-            onDragProvider(cell)
-        } preview: {
-            DragBadgePreview(count: 1, title: "Blank Slot")
-        }
+        .contentShape(Rectangle())
+        .help("Blank alignment slot — drop a file here or right-click to choose or remove")
+        .gesture(
+            DragGesture(minimumDistance: 4, coordinateSpace: .named("pairingRowsScroll"))
+                .onChanged { value in
+                    onPointerReorderChanged(cell, value.location.y)
+                }
+                .onEnded { _ in
+                    onPointerReorderEnded()
+                }
+        )
         .contextMenu {
             Button("Choose File…") {
                 model.manualChooseFileForCell(in: column, at: rowIndex, undoManager: undoManager)
@@ -1675,6 +1982,8 @@ private struct ManualPairingCellView: View {
         )
         .padding(.horizontal, Space.xs)
         .padding(.vertical, 2)
+        .contentShape(Rectangle())
+        .help("Empty slot in \(column.title) — drop a file here or right-click to choose")
         .contextMenu {
             Button("Choose File…") {
                 model.manualChooseFileForCell(in: column, at: rowIndex, undoManager: undoManager)
@@ -1689,7 +1998,197 @@ private struct ManualPairingCellView: View {
     }
 }
 
-// MARK: - Per-Row Status Indicator
+// MARK: - Isolated Column-Level Drop Target, Incompatible Dimming & Zero-Lag Insertion Line
+
+private struct ManualColumnHeaderDimOverlay: View {
+    let column: ManualBatchColumnKind
+    let coordinator: ManualDragCoordinator
+
+    var body: some View {
+        if coordinator.isColumnIncompatible(column) {
+            Rectangle()
+                .fill(.windowBackground.opacity(0.58))
+                .allowsHitTesting(false)
+        }
+    }
+}
+
+private struct ManualColumnDropHitTarget: View {
+    let column: ManualBatchColumnKind
+    let width: CGFloat
+    let height: CGFloat
+    let rowHeight: CGFloat
+    let itemCount: Int
+    let coordinator: ManualDragCoordinator
+    let onCommitDrop: @MainActor ([URL], Int?, Bool) -> Void
+
+    var body: some View {
+        Color.clear
+            .frame(width: width, height: height)
+            .contentShape(Rectangle())
+            .onDrop(
+                of: [.json, .fileURL],
+                delegate: ManualColumnDropDelegate(
+                    column: column,
+                    rowHeight: rowHeight,
+                    itemCount: itemCount,
+                    coordinator: coordinator,
+                    onCommitDrop: onCommitDrop
+                )
+            )
+    }
+}
+
+private struct ManualColumnVisualOverlay: View {
+    let column: ManualBatchColumnKind
+    let width: CGFloat
+    let height: CGFloat
+    let rowHeight: CGFloat
+    let coordinator: ManualDragCoordinator
+
+    var body: some View {
+        let isIncompatible = coordinator.isColumnIncompatible(column)
+        let isActiveTarget = !isIncompatible && coordinator.dropTargetColumn == column
+        let insertSlot = isActiveTarget ? coordinator.dropInsertIndex : nil
+
+        ZStack(alignment: .topLeading) {
+            if isActiveTarget && coordinator.reorderColumn == nil {
+                Rectangle()
+                    .fill(Palette.accent.opacity(0.06))
+                    .overlay(
+                        Rectangle()
+                            .strokeBorder(Palette.accent.opacity(0.55), lineWidth: 1)
+                    )
+            }
+
+            if isIncompatible {
+                Rectangle()
+                    .fill(.windowBackground.opacity(0.58))
+                    .overlay(
+                        Rectangle()
+                            .fill(Surfaces.hairline.opacity(0.25))
+                    )
+            }
+
+            if let slot = insertSlot {
+                let lineY = max(0, min(CGFloat(slot) * rowHeight, height - 2))
+                VStack(spacing: 0) {
+                    if lineY > 0 {
+                        Color.clear.frame(height: lineY)
+                    }
+                    HStack(spacing: 0) {
+                        Circle()
+                            .fill(Palette.accent)
+                            .frame(width: 8, height: 8)
+                        Rectangle()
+                            .fill(Palette.accent)
+                            .frame(height: 2)
+                    }
+                    .padding(.horizontal, Space.xs)
+                    Spacer(minLength: 0)
+                }
+            }
+        }
+        .frame(width: width, height: height, alignment: .topLeading)
+        .allowsHitTesting(false)
+    }
+}
+
+private struct ManualColumnDropDelegate: DropDelegate {
+    let column: ManualBatchColumnKind
+    let rowHeight: CGFloat
+    let itemCount: Int
+    let coordinator: ManualDragCoordinator
+    let onCommitDrop: @MainActor ([URL], Int?, Bool) -> Void
+
+    private func computeSlotIndex(for location: CGPoint) -> Int {
+        let raw = Int((location.y / rowHeight).rounded())
+        return max(0, min(raw, itemCount))
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        if coordinator.isColumnIncompatible(column) {
+            return false
+        }
+        return info.hasItemsConforming(to: [.json, .fileURL])
+    }
+
+    func dropEntered(info: DropInfo) {
+        guard !coordinator.isColumnIncompatible(column) else { return }
+        coordinator.updateDropTarget(column: column, index: computeSlotIndex(for: info.location))
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        if coordinator.isColumnIncompatible(column) {
+            if coordinator.dropTargetColumn == column {
+                coordinator.updateDropTarget(column: nil, index: nil)
+            }
+            return DropProposal(operation: .forbidden)
+        }
+        coordinator.updateDropTarget(column: column, index: computeSlotIndex(for: info.location))
+        return DropProposal(operation: .copy)
+    }
+
+    func dropExited(info: DropInfo) {
+        if coordinator.dropTargetColumn == column {
+            coordinator.updateDropTarget(column: nil, index: nil)
+        }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        if coordinator.isColumnIncompatible(column) {
+            coordinator.endAllDrags()
+            return false
+        }
+
+        let targetSlot = computeSlotIndex(for: info.location)
+        let insertionIndex: Int? = targetSlot >= itemCount ? nil : targetSlot
+
+        // Fast synchronous path for File Browser drags (zero NSItemProvider JSON decode latency!)
+        if let localURLs = coordinator.consumeBrowserDragURLs() {
+            onCommitDrop(localURLs, insertionIndex, true)
+            return true
+        }
+
+        coordinator.endAllDrags()
+
+        // Fallback JSON path (if needed)
+        let jsonProviders = info.itemProviders(for: [.json])
+        if let jsonProvider = jsonProviders.first {
+            let commit = onCommitDrop
+            let targetColumn = column
+            jsonProvider.loadDataRepresentation(forTypeIdentifier: UTType.json.identifier) { data, _ in
+                guard let data,
+                      let transfer = try? JSONDecoder().decode(ManualDragTransfer.self, from: data),
+                      transfer.sushiManualTransfer else { return }
+                if let kind = transfer.itemKind, !kind.acceptsColumn(targetColumn) {
+                    return
+                }
+                let urls = transfer.filePaths.map { URL(fileURLWithPath: $0) }
+                Task { @MainActor in
+                    commit(urls, insertionIndex, true)
+                }
+            }
+            return true
+        }
+
+        // External macOS Finder drop (single files, multi-file selection, or folders)
+        let urlProviders = info.itemProviders(for: [.fileURL]).filter { $0.canLoadObject(ofClass: URL.self) }
+        guard !urlProviders.isEmpty else { return false }
+        let commit = onCommitDrop
+        let collector = ManualURLDropCollector(total: urlProviders.count) { urls in
+            commit(urls, insertionIndex, true)
+        }
+        for provider in urlProviders {
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                Task { @MainActor in collector.record(url) }
+            }
+        }
+        return true
+    }
+}
+
+// MARK: - Per-Row Status Indicator & Empty Placeholders
 
 private struct ManualRowStatusCell: View {
     let row: ManualBatchPairRow
@@ -1704,7 +2203,7 @@ private struct ManualRowStatusCell: View {
             .padding(.horizontal, Space.xs)
             .padding(.vertical, 2)
             .background(info.color.opacity(0.14), in: Capsule())
-            .help(info.help)
+            .hoverDescription(info.help)
     }
 
     private var statusInfo: (label: String, symbol: String, color: Color, help: String) {
@@ -1736,20 +2235,16 @@ private struct ManualRowStatusCell: View {
     }
 }
 
-// MARK: - Empty & Tail Drop Targets
-
-private struct ManualEmptyColumnDropTarget: View {
+private struct ManualEmptyColumnPlaceholder: View {
     let column: ManualBatchColumnKind
     let prompt: String
     let onAdd: () -> Void
-    let onDropProviders: ([NSItemProvider]) -> Bool
-    @State private var isTargeted = false
 
     var body: some View {
         VStack(spacing: Space.sm) {
             Image(systemName: column == .sourceSubtitle ? "captions.bubble" : "film")
                 .font(.title3)
-                .foregroundStyle(isTargeted ? Palette.accent : .secondary)
+                .foregroundStyle(.secondary)
             Text(prompt)
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -1757,39 +2252,19 @@ private struct ManualEmptyColumnDropTarget: View {
                 .fixedSize(horizontal: false, vertical: true)
             Button("Add Files…", action: onAdd)
                 .controlSize(.mini)
+                .hoverDescription("Choose files or folders to add to \(column.title)")
         }
         .padding(Space.md)
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .background(isTargeted ? Palette.accent.opacity(0.08) : Surfaces.dropZone)
+        .background(Surfaces.dropZone)
         .overlay(
             RoundedRectangle(cornerRadius: Radius.sm, style: .continuous)
                 .strokeBorder(
-                    isTargeted ? Palette.accent : Surfaces.hairline,
-                    style: StrokeStyle(lineWidth: isTargeted ? 2 : 1, dash: [6, 4])
+                    Surfaces.hairline,
+                    style: StrokeStyle(lineWidth: 1, dash: [6, 4])
                 )
                 .padding(Space.sm)
         )
-        .onDrop(of: [.json, .fileURL], isTargeted: $isTargeted, perform: onDropProviders)
-    }
-}
-
-private struct ManualColumnTailDropZone: View {
-    let column: ManualBatchColumnKind
-    let onDropProviders: ([NSItemProvider]) -> Bool
-    @State private var isTargeted = false
-
-    var body: some View {
-        ZStack {
-            isTargeted ? Palette.accent.opacity(0.08) : Color.clear
-            if isTargeted {
-                Text("Drop to append to \(column.title)")
-                    .font(.caption)
-                    .foregroundStyle(Palette.accentText)
-            }
-        }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .contentShape(Rectangle())
-        .onDrop(of: [.json, .fileURL], isTargeted: $isTargeted, perform: onDropProviders)
     }
 }
 

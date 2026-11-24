@@ -672,12 +672,14 @@ struct BatchQueueView: View {
                                     model.revealInFinder(sub)
                                 }
                                 .controlSize(.small)
+                                .hoverDescription("Reveal the synced subtitle output file in Finder")
                             }
                             if let mkv = job.mergedFilepath {
                                 Button("Reveal Merged MKV", systemImage: "film.stack") {
                                     model.revealInFinder(mkv)
                                 }
                                 .controlSize(.small)
+                                .hoverDescription("Reveal the merged MKV output file in Finder")
                             }
                             Spacer()
                         }
@@ -761,8 +763,10 @@ private struct BatchIntakeFolderCard: View {
                 HStack(spacing: Space.sm) {
                     Button("Replace…", action: onChoose)
                         .controlSize(.small)
+                        .hoverDescription("Choose a different \(title.lowercased())")
                     Button("Clear", action: onClear)
                         .controlSize(.small)
+                        .hoverDescription("Clear the staged \(title.lowercased())")
                     Spacer(minLength: Space.xs)
                     if compactHeader {
                         readyBadge
@@ -781,6 +785,7 @@ private struct BatchIntakeFolderCard: View {
                     Button(chooseLabel, action: onChoose)
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
+                        .hoverDescription("Choose your \(title.lowercased())")
                 }
                 .frame(maxWidth: .infinity, minHeight: 124)
             }
