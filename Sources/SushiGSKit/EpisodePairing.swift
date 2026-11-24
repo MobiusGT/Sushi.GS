@@ -124,7 +124,7 @@ public struct PairedEpisodeDraft: Identifiable, Hashable, Sendable {
 public enum EpisodePairing {
     public static let videoExtensions: Set<String> = ["mkv", "mp4", "avi", "webm", "m4v", "mov"]
     public static let audioExtensions: Set<String> = ["flac", "wav", "aac", "ac3", "eac3", "m4a", "mp3", "opus", "pcm", "mka"]
-    public static let subtitleExtensions: Set<String> = ["ass", "ssa", "srt"]
+    public static let subtitleExtensions: Set<String> = ["ass", "ssa", "srt", "sub", "vtt"]
     public static let mediaExtensions: Set<String> = videoExtensions.union(audioExtensions)
 
     private static let noisePatterns: [String] = [
@@ -139,6 +139,7 @@ public enum EpisodePairing {
         #"(?<![A-Za-z0-9])[257]\.[01](?![A-Za-z0-9])"#,                                        // Channel layouts 5.1 / 2.0
         #"[\(\[](?:19|20)\d{2}[\)\]]"#,                                                        // Release year (2024)
         #"\b(?:web-?dl|web-?rip|blu-?ray|bd-?rip|bd-?remux|bdmv|remux|bd|dvd-?rip|dvd|hdtv|dual[\s\.\-_]?audio|multi[\s\.\-_]?subs?|repack|proper|uncensored|amzn|nf|cr|hidive|funimation)\b"#,
+        #"(?<![A-Za-z0-9])track[\s\.\-_#]*\d+(?![A-Za-z0-9])"#,                                // Extracted subtitle track suffixes (track3 / Track 2)
         #"(?<![A-Za-z0-9])(?:v[0-9]|rev\d+)(?![A-Za-z0-9])"#,                                  // Standalone v2 / rev2
     ]
 
@@ -178,14 +179,20 @@ public enum EpisodePairing {
 
     public static func sanitizeFilename(_ filename: String) -> String {
         let stem = URL(fileURLWithPath: filename).deletingPathExtension().lastPathComponent
-        var cleaned = stem
+        // Normalize fullwidth digits (０–９) to ASCII digits without altering Japanese Kana/Kanji.
+        var cleaned = String(String.UnicodeScalarView(stem.unicodeScalars.map { scalar -> UnicodeScalar in
+            if scalar.value >= 0xFF10 && scalar.value <= 0xFF19 {
+                return UnicodeScalar(scalar.value - 0xFF10 + 0x30) ?? scalar
+            }
+            return scalar
+        }))
 
         // Strip version suffixes attached directly to episode numbers (e.g. `01v2` -> `01`, `00001v2` -> `00001`, `S01E05v2` -> `S01E05`, `12.5v2` -> `12.5`).
         cleaned = replaceRegex(#"(?i)(?<!\d)(0*\d{1,4}(?:\.\d)?)v[1-9]\b"#, in: cleaned, with: "$1")
 
         // Strip release-group and technical metadata brackets BEFORE token-level noise stripping
-        // so blocks like `[Moozzi2]`, `(BD Remux 1080p)`, `(DVD 2)`, `[A1B2C3D4]`, `(1990)` are removed whole
-        // without leaving orphaned digits inside brackets.
+        // so blocks like `[Moozzi2]`, `[Stardust]`, `【Stardust】`, `(BD Remux 1080p)`, `(DVD 2)`, `[A1B2C3D4]`, `(1990)`
+        // are removed whole without leaving orphaned digits inside brackets.
         cleaned = stripNonEpisodeBrackets(from: cleaned)
 
         for pattern in noisePatterns {
@@ -229,10 +236,10 @@ public enum EpisodePairing {
     }
 
     /// Removes bracketed/parenthesized release-group and technical metadata blocks (e.g. `[Moozzi2]`,
-    /// `[Stardust]`, `(BD Remux 1080p)`, `(DVD)`, `[1080p FLAC]`, `(rev2)`) while preserving pure
+    /// `[Stardust]`, `【Stardust】`, `(BD Remux 1080p)`, `(DVD)`, `[1080p FLAC]`, `(rev2)`) while preserving pure
     /// numeric episode brackets (`[01]`, `[00001]`, `(05)`) and explicit season/episode/special brackets.
     private static func stripNonEpisodeBrackets(from text: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: #"\[[^\[\]]*\]|\([^\(\)]*\)"#) else {
+        guard let regex = try? NSRegularExpression(pattern: #"\[[^\[\]]*\]|\([^\(\)]*\)|【[^【】]*】|（[^（）]*）"#) else {
             return text
         }
 
@@ -327,10 +334,11 @@ public enum EpisodePairing {
         epSearchText = replaceRegex(#"(?i)\bSeason[\s\.\-_]*\d{1,2}\b"#, in: epSearchText, with: " ")
         epSearchText = replaceRegex(#"(?i)(?:^|[\s\.\-_(\[])S\d{1,2}(?=$|[\s\.\-_)\]])"#, in: epSearchText, with: " ")
 
-        // 3. Numbered Specials / OVA / OAD / SP / Special / NCOP / NCED
-        for m in allMatches(#"(?i)\b(OVA|OAD|SP|Special|NCOP|NCED)[\s\.\-_#]*(0*\d{1,4}(?:\.\d)?)(?!\d)"#, in: epSearchText) {
+        // 3. Numbered Specials / Extras (OVA / OAD / SP / Special / NCOP / NCED / Menu / PV / CM / OP / ED / Bonus)
+        for m in allMatches(#"(?i)\b(OVA|OAD|SP|Special|NCOP|NCED|Menu|PV|CM|OP|ED|Preview|Trailer|Bonus|Extra|Omake)[\s\.\-_#]*(0*\d{1,4}(?:\.\d)?)(?!\d)"#, in: epSearchText) {
             if let e = parseEpisodeNumber(m[2]) {
-                let tag = m[1].uppercased() == "SPECIAL" ? "SP" : m[1].uppercased()
+                let rawTag = m[1].uppercased()
+                let tag = rawTag == "SPECIAL" ? "SP" : rawTag
                 return EpisodeKey(season: explicitSeason, episode: e, specialTag: tag)
             }
         }
@@ -343,21 +351,37 @@ public enum EpisodePairing {
         }
 
         // 5. Fansub dash pattern: " - 05 " / " - 00001 " / " - 01.5 " / " - 05 ["
-        for m in allMatches(#"(?:\s+-\s+|\s+–\s+)(0*\d{1,4}(?:\.\d)?)(?=$|[\s\[\(\-_\.,+])"#, in: epSearchText) {
+        for m in allMatches(#"(?:\s+-\s+|\s+–\s+|\s+—\s+)(0*\d{1,4}(?:\.\d)?)(?![A-Za-z0-9])"#, in: epSearchText) {
             if let e = parseEpisodeNumber(m[1]) {
                 return EpisodeKey(season: explicitSeason, episode: e)
             }
         }
 
-        // 6. Bracketed episode number: [05] / (05) / [00001]
-        for m in allMatches(#"[\[\(]\s*(0*\d{1,4}(?:\.\d)?)\s*[\]\)]"#, in: epSearchText) {
+        // 6a. Square-bracketed episode number: [05] / [00001] / 【05】
+        for m in allMatches(#"[\[\【]\s*(0*\d{1,4}(?:\.\d)?)\s*[\]\】]"#, in: epSearchText) {
             if let e = parseEpisodeNumber(m[1]) {
                 return EpisodeKey(season: explicitSeason, episode: e)
+            }
+        }
+
+        // 6b. Parenthesized episode number: (05) / (00001), avoiding macOS duplicate-copy suffixes like `00002 complete++ (1)`
+        let textWithoutParens = replaceRegex(#"[\(\（]\s*0*\d{1,4}(?:\.\d)?\s*[\)\）]"#, in: epSearchText, with: " ")
+        let hasUnbracketedZeroPaddedNumber = allMatches(
+            #"(?<![A-Za-z0-9])(0+\d{1,4}(?:\.\d)?)(?![A-Za-z0-9])"#,
+            in: textWithoutParens
+        ).contains { captures in
+            captures.count > 1 && parseEpisodeNumber(captures[1]) != nil
+        }
+        if !hasUnbracketedZeroPaddedNumber {
+            for m in allMatches(#"[\(\（]\s*(0*\d{1,4}(?:\.\d)?)\s*[\)\）]"#, in: epSearchText) {
+                if let e = parseEpisodeNumber(m[1]) {
+                    return EpisodeKey(season: explicitSeason, episode: e)
+                }
             }
         }
 
         // 7. Hash or underscored episode number: #05 / _05_ / _00001_
-        for m in allMatches(#"(?:#|_)(0*\d{1,4}(?:\.\d)?)(?=$|[\s_\.\-\+\[\(\)])"#, in: epSearchText) {
+        for m in allMatches(#"(?:#|_)(0*\d{1,4}(?:\.\d)?)(?![A-Za-z0-9])"#, in: epSearchText) {
             if let e = parseEpisodeNumber(m[1]) {
                 return EpisodeKey(season: explicitSeason, episode: e)
             }
@@ -372,7 +396,7 @@ public enum EpisodePairing {
         // 9. Standalone-number fallback (e.g. "00001 complete++", "01_final", "0012 (rev2)" after stripping group/meta brackets)
         let standaloneCandidates = allMatches(
             #"(?<![A-Za-z0-9])(0*\d{1,4}(?:\.\d)?)(?![A-Za-z0-9])"#,
-            in: epSearchText
+            in: textWithoutParens
         ).compactMap { captures -> (raw: String, value: Double, zeroPadded: Bool)? in
             guard captures.count > 1 else { return nil }
             let raw = captures[1]
@@ -400,7 +424,7 @@ public enum EpisodePairing {
         let rawTokens = text
             .lowercased()
             .components(separatedBy: CharacterSet.alphanumerics.inverted)
-            .filter { !$0.isEmpty && !titleStopWords.contains($0) }
+            .filter { !$0.isEmpty && !$0.allSatisfy(\.isNumber) && !titleStopWords.contains($0) }
 
         return Set(rawTokens)
     }
@@ -429,16 +453,23 @@ public enum EpisodePairing {
         let season: Int?
         let episodeKey: EpisodeKey?
         let titleTokens: Set<String>
+        let rawTokens: Set<String>
         let specialCats: Set<String>
 
         init(url: URL) {
             self.url = url
-            self.stemLower = url.deletingPathExtension().lastPathComponent.lowercased()
+            let stem = url.deletingPathExtension().lastPathComponent
+            self.stemLower = stem.lowercased()
             let key = EpisodePairing.extractEpisodeKey(from: url.lastPathComponent)
             self.episodeKey = key
             self.season = key?.season ?? EpisodePairing.extractSeason(from: url.lastPathComponent)
             let tokens = EpisodePairing.normalizedTitleTokens(from: url.lastPathComponent)
             self.titleTokens = tokens
+            self.rawTokens = Set(
+                stem.lowercased()
+                    .components(separatedBy: CharacterSet.alphanumerics.inverted)
+                    .filter { !$0.isEmpty }
+            )
             self.specialCats = EpisodePairing.specialCategories(in: tokens)
         }
     }
@@ -459,6 +490,13 @@ public enum EpisodePairing {
             var merged: Set<String> = []
             if let src = source { merged.formUnion(src.titleTokens) }
             if let dst = target { merged.formUnion(dst.titleTokens) }
+            return merged
+        }
+
+        var rawTokens: Set<String> {
+            var merged: Set<String> = []
+            if let src = source { merged.formUnion(src.rawTokens) }
+            if let dst = target { merged.formUnion(dst.rawTokens) }
             return merged
         }
 
@@ -688,7 +726,7 @@ public enum EpisodePairing {
                         && rowKey.episode == subKey.episode
                         && rowKey.specialTag == subKey.specialTag
                 }
-                if let best = bestByTitleSimilarity(for: row.titleTokens, among: candidates) {
+                if let best = bestByTitleSimilarity(for: row.titleTokens, rawReferenceTokens: row.rawTokens, among: candidates) {
                     usedSubs.insert(best.url)
                     rows[idx].subtitle = best
                     rows[idx].subtitleMatchKind = .episodeRegex
@@ -706,7 +744,7 @@ public enum EpisodePairing {
                     return rowKey.episode == subKey.episode
                         && rowKey.specialTag == subKey.specialTag
                 }
-                if let best = bestByTitleSimilarity(for: row.titleTokens, among: candidates) {
+                if let best = bestByTitleSimilarity(for: row.titleTokens, rawReferenceTokens: row.rawTokens, among: candidates) {
                     usedSubs.insert(best.url)
                     rows[idx].subtitle = best
                     rows[idx].subtitleMatchKind = .episodeRegex
@@ -735,7 +773,7 @@ public enum EpisodePairing {
                     }
                     return titleSimilarity(rowTokens, sub.titleTokens) >= 0.60
                 }
-                if let best = bestByTitleSimilarity(for: rowTokens, among: candidates) {
+                if let best = bestByTitleSimilarity(for: rowTokens, rawReferenceTokens: row.rawTokens, among: candidates) {
                     usedSubs.insert(best.url)
                     rows[idx].subtitle = best
                     rows[idx].subtitleMatchKind = .titleSimilarity
@@ -816,40 +854,79 @@ public enum EpisodePairing {
         }
     }
 
-    private static func bestByTitleSimilarity(for referenceTokens: Set<String>, among candidates: [FileMetadata]) -> FileMetadata? {
+    private static func bestByTitleSimilarity(
+        for referenceTokens: Set<String>,
+        rawReferenceTokens: Set<String> = [],
+        among candidates: [FileMetadata]
+    ) -> FileMetadata? {
         guard !candidates.isEmpty else { return nil }
         if candidates.count == 1 { return candidates[0] }
         return candidates.max { lhs, rhs in
             let s1 = titleSimilarity(referenceTokens, lhs.titleTokens)
             let s2 = titleSimilarity(referenceTokens, rhs.titleTokens)
             if s1 != s2 { return s1 < s2 }
+            if !rawReferenceTokens.isEmpty {
+                let r1 = titleSimilarity(rawReferenceTokens, lhs.rawTokens)
+                let r2 = titleSimilarity(rawReferenceTokens, rhs.rawTokens)
+                if r1 != r2 { return r1 < r2 }
+            }
             return lhs.url.lastPathComponent.localizedStandardCompare(rhs.url.lastPathComponent) == .orderedDescending
         }
     }
 
+    /// Recursively scans `directory` (including nested subfolders and symlinked directories)
+    /// for supported media and subtitle files while skipping hidden files, generated `.sushi.`
+    /// outputs, and any nested `Merged Files` output subfolder.
     public static func scanMediaFiles(in directory: URL) -> (media: [URL], subtitles: [URL]) {
         let fm = FileManager.default
-        guard let enumerator = fm.enumerator(
-            at: directory,
-            includingPropertiesForKeys: [.isRegularFileKey],
-            options: [.skipsHiddenFiles]
-        ) else {
-            return ([], [])
-        }
-
+        let root = directory.standardizedFileURL.resolvingSymlinksInPath()
         var media: [URL] = []
         var subs: [URL] = []
-        for case let fileURL as URL in enumerator {
-            if fileURL.pathComponents.contains("Merged Files") {
-                continue
+        var visitedDirs: Set<String> = []
+
+        func walk(_ currentDir: URL) {
+            let canonicalPath = currentDir.resolvingSymlinksInPath().path
+            guard visitedDirs.insert(canonicalPath).inserted else { return }
+
+            guard let entries = try? fm.contentsOfDirectory(
+                at: currentDir,
+                includingPropertiesForKeys: [.isDirectoryKey, .isSymbolicLinkKey, .isHiddenKey],
+                options: [.skipsHiddenFiles]
+            ) else {
+                return
             }
-            let ext = fileURL.pathExtension.lowercased()
-            if mediaExtensions.contains(ext) {
-                media.append(fileURL)
-            } else if subtitleExtensions.contains(ext), !fileURL.lastPathComponent.contains(".sushi.") {
-                subs.append(fileURL)
+
+            let sortedEntries = entries.sorted {
+                $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
+            }
+
+            for entry in sortedEntries {
+                let name = entry.lastPathComponent
+                if name.hasPrefix(".") { continue }
+
+                let resolved = entry.resolvingSymlinksInPath()
+                var isDir: ObjCBool = false
+                guard fm.fileExists(atPath: resolved.path, isDirectory: &isDir) else { continue }
+
+                if isDir.boolValue {
+                    if name == "Merged Files" {
+                        continue
+                    }
+                    walk(resolved)
+                } else {
+                    let ext = entry.pathExtension.lowercased()
+                    let normalizedURL = entry.standardizedFileURL
+                    if mediaExtensions.contains(ext) {
+                        media.append(normalizedURL)
+                    } else if subtitleExtensions.contains(ext),
+                              !name.localizedCaseInsensitiveContains(".sushi.") {
+                        subs.append(normalizedURL)
+                    }
+                }
             }
         }
+
+        walk(root)
         return (media, subs)
     }
 

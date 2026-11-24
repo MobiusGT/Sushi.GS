@@ -1254,19 +1254,13 @@ private struct ManualFileBrowserNavBar: View {
             }
         }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
-            guard let first = providers.first(where: { $0.canLoadObject(ofClass: URL.self) }) else {
-                return false
-            }
             let onRoot: @MainActor (URL) -> Void = { droppedURL in
                 model.setManualBrowserRoot(droppedURL)
             }
-            _ = first.loadObject(ofClass: URL.self) { url, _ in
-                guard let url else { return }
-                Task { @MainActor in
-                    onRoot(url)
-                }
+            return DroppedFileURLLoader.load(from: providers) { urls in
+                guard let first = urls.first else { return }
+                onRoot(first)
             }
-            return true
         }
     }
 
@@ -1416,19 +1410,13 @@ private struct ManualFileBrowserListPane: View {
             }
         }
         .onDrop(of: [.fileURL], isTargeted: $isDropTargeted) { providers in
-            guard let first = providers.first(where: { $0.canLoadObject(ofClass: URL.self) }) else {
-                return false
-            }
             let onRoot: @MainActor (URL) -> Void = { droppedURL in
                 model.setManualBrowserRoot(droppedURL)
             }
-            _ = first.loadObject(ofClass: URL.self) { url, _ in
-                guard let url else { return }
-                Task { @MainActor in
-                    onRoot(url)
-                }
+            return DroppedFileURLLoader.load(from: providers) { urls in
+                guard let first = urls.first else { return }
+                onRoot(first)
             }
-            return true
         }
     }
 
@@ -2173,18 +2161,11 @@ private struct ManualColumnDropDelegate: DropDelegate {
         }
 
         // External macOS Finder drop (single files, multi-file selection, or folders)
-        let urlProviders = info.itemProviders(for: [.fileURL]).filter { $0.canLoadObject(ofClass: URL.self) }
-        guard !urlProviders.isEmpty else { return false }
+        let urlProviders = info.itemProviders(for: [.fileURL])
         let commit = onCommitDrop
-        let collector = ManualURLDropCollector(total: urlProviders.count) { urls in
+        return DroppedFileURLLoader.load(from: urlProviders) { urls in
             commit(urls, insertionIndex, true)
         }
-        for provider in urlProviders {
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                Task { @MainActor in collector.record(url) }
-            }
-        }
-        return true
     }
 }
 
@@ -2347,25 +2328,5 @@ private struct DragBadgePreview: View {
             RoundedRectangle(cornerRadius: Radius.xs, style: .continuous)
                 .strokeBorder(Palette.accent.opacity(0.5), lineWidth: 1)
         )
-    }
-}
-
-@MainActor
-private final class ManualURLDropCollector {
-    private var remaining: Int
-    private var urls: [URL] = []
-    private let completion: ([URL]) -> Void
-
-    init(total: Int, completion: @escaping ([URL]) -> Void) {
-        self.remaining = total
-        self.completion = completion
-    }
-
-    func record(_ url: URL?) {
-        if let url { urls.append(url) }
-        remaining -= 1
-        if remaining <= 0, !urls.isEmpty {
-            completion(urls)
-        }
     }
 }

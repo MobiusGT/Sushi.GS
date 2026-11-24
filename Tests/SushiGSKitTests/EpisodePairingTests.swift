@@ -575,4 +575,107 @@ struct EpisodePairingTests {
         #expect(seasonConflict.count == 2)
         #expect(seasonConflict.allSatisfy { $0.matchKind == .unmatched })
     }
+
+    @Test("scanMediaFiles discovers nested subfolders, symlinked folders, uppercase/.sub/.vtt subtitles, and only skips child Merged Files")
+    func scanMediaFilesNestedSymlinksExtensionsAndMergedFiles() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory.appendingPathComponent("sushigs-scan-test-\(UUID().uuidString)")
+        // Place the scanned directory inside an ancestor named "Merged Files" to ensure ancestor path never suppresses scans
+        let ancestorMerged = root.appendingPathComponent("Merged Files")
+        let subsRoot = ancestorMerged.appendingPathComponent("SweetMint Subs")
+        let nested1 = subsRoot.appendingPathComponent("Level1/Level2")
+        let childMerged = subsRoot.appendingPathComponent("Merged Files")
+        let externalLinkedTarget = root.appendingPathComponent("ExternalSubFolder")
+        let symlinkInside = subsRoot.appendingPathComponent("LinkedSubs")
+        let symlinkRoot = root.appendingPathComponent("SubsRootLink")
+        defer { try? fm.removeItem(at: root) }
+
+        try fm.createDirectory(at: nested1, withIntermediateDirectories: true)
+        try fm.createDirectory(at: childMerged, withIntermediateDirectories: true)
+        try fm.createDirectory(at: externalLinkedTarget, withIntermediateDirectories: true)
+        try fm.createSymbolicLink(at: symlinkInside, withDestinationURL: externalLinkedTarget)
+        try fm.createSymbolicLink(at: symlinkRoot, withDestinationURL: subsRoot)
+
+        fm.createFile(atPath: subsRoot.appendingPathComponent("[Stardust] 00001 complete++.ass").path, contents: Data())
+        fm.createFile(atPath: subsRoot.appendingPathComponent("[Stardust] 00002 complete++.ASS").path, contents: Data())
+        fm.createFile(atPath: nested1.appendingPathComponent("[Stardust] 00003 complete++.Srt").path, contents: Data())
+        fm.createFile(atPath: nested1.appendingPathComponent("[Stardust] 00004 complete++.vtt").path, contents: Data())
+        fm.createFile(atPath: externalLinkedTarget.appendingPathComponent("【Stardust】 00005 complete++.sub").path, contents: Data())
+        fm.createFile(atPath: subsRoot.appendingPathComponent("[Stardust] 00001.mkv.SUSHI.ass").path, contents: Data())
+        fm.createFile(atPath: childMerged.appendingPathComponent("[Stardust] 00099.ass").path, contents: Data())
+        fm.createFile(atPath: subsRoot.appendingPathComponent(".hidden.ass").path, contents: Data())
+        fm.createFile(atPath: subsRoot.appendingPathComponent("readme.txt").path, contents: Data())
+
+        let scannedDirect = EpisodePairing.scanMediaFiles(in: subsRoot)
+        let directNames = Set(scannedDirect.subtitles.map(\.lastPathComponent))
+        #expect(directNames == Set([
+            "[Stardust] 00001 complete++.ass",
+            "[Stardust] 00002 complete++.ASS",
+            "[Stardust] 00003 complete++.Srt",
+            "[Stardust] 00004 complete++.vtt",
+            "【Stardust】 00005 complete++.sub",
+        ]))
+
+        // Scanning via a symlink to the root folder must produce the exact same subtitle set
+        let scannedViaSymlink = EpisodePairing.scanMediaFiles(in: symlinkRoot)
+        #expect(Set(scannedViaSymlink.subtitles.map(\.lastPathComponent)) == directNames)
+    }
+
+    @Test("47-episode BDMV + fansub batch with Menu/PV/CM/NCOP extras, track/copy suffixes, fullwidth brackets, and group tie-breaking")
+    func fullSeriesBDMVAndEdgeCases() {
+        var sources: [URL] = [
+            URL(fileURLWithPath: "/src/[Moozzi2] Mahou no Angel Sweet Mint - Menu 01 (BD Remux 1080p).mkv"),
+            URL(fileURLWithPath: "/src/[Moozzi2] Mahou no Angel Sweet Mint - PV 01 (BD Remux 1080p).mkv"),
+            URL(fileURLWithPath: "/src/[Moozzi2] Mahou no Angel Sweet Mint - CM 01 (BD Remux 1080p).mkv"),
+            URL(fileURLWithPath: "/src/[Moozzi2] Mahou no Angel Sweet Mint - NCOP (BD Remux 1080p).mkv"),
+        ]
+        var targets: [URL] = []
+        var subs: [URL] = []
+
+        for ep in 1...47 {
+            let ep2 = String(format: "%02d", ep)
+            let ep5 = String(format: "%05d", ep)
+            sources.append(URL(fileURLWithPath: "/src/[Moozzi2] Mahou no Angel Sweet Mint - \(ep2) (BD Remux 1080p).mkv"))
+            targets.append(URL(fileURLWithPath: "/dst/[Stardust] \(ep5).mkv"))
+            subs.append(URL(fileURLWithPath: "/sub/[Stardust] \(ep5) complete++.ass"))
+        }
+
+        let paired = EpisodePairing.pairFiles(
+            sources: sources,
+            targets: targets,
+            externalSubtitles: subs,
+            subtitleMode: .external
+        )
+
+        // 47 complete 3-way episode rows + 4 unmatched bonus sources (Menu 01, PV 01, CM 01, NCOP) = 51 rows
+        let complete = paired.filter { $0.sourceFile != nil && $0.targetFile != nil && $0.externalSubtitleFile != nil }
+        #expect(complete.count == 47)
+        for ep in 1...47 {
+            let ep2 = String(format: "%02d", ep)
+            let ep5 = String(format: "%05d", ep)
+            let match = complete.first { $0.episodeKey?.episode == Double(ep) && $0.episodeKey?.specialTag == nil }
+            #expect(match?.sourceFile?.lastPathComponent == "[Moozzi2] Mahou no Angel Sweet Mint - \(ep2) (BD Remux 1080p).mkv")
+            #expect(match?.targetFile?.lastPathComponent == "[Stardust] \(ep5).mkv")
+            #expect(match?.externalSubtitleFile?.lastPathComponent == "[Stardust] \(ep5) complete++.ass")
+        }
+
+        // Duplicate-copy suffix `(1)`, extracted `Track 3`, and fullwidth brackets `【Stardust】`
+        #expect(EpisodePairing.extractEpisodeKey(from: "[Stardust] 00002 complete++ (1).ass")?.episode == 2.0)
+        #expect(EpisodePairing.extractEpisodeKey(from: "[Stardust] 00002 - Track 3.ass")?.episode == 2.0)
+        #expect(EpisodePairing.extractEpisodeKey(from: "[Stardust] 00002_track3_eng.ass")?.episode == 2.0)
+        #expect(EpisodePairing.extractEpisodeKey(from: "【Stardust】 00001 complete++.ass")?.episode == 1.0)
+
+        // Release-group tie-breaker: `[Stardust] 00001 complete++.ass` wins over `[Other] 01.ass` when Target is `[Stardust] 00001.mkv`
+        let tieBreak = EpisodePairing.pairFiles(
+            sources: [URL(fileURLWithPath: "/src/[Moozzi2] Mahou no Angel Sweet Mint - 01 (BD Remux 1080p).mkv")],
+            targets: [URL(fileURLWithPath: "/dst/[Stardust] 00001.mkv")],
+            externalSubtitles: [
+                URL(fileURLWithPath: "/sub/[Alpha] 01.ass"),
+                URL(fileURLWithPath: "/sub/[Stardust] 00001 complete++.ass"),
+            ],
+            subtitleMode: .external
+        )
+        let matchedRow = tieBreak.first { $0.sourceFile != nil && $0.targetFile != nil }
+        #expect(matchedRow?.externalSubtitleFile?.lastPathComponent == "[Stardust] 00001 complete++.ass")
+    }
 }

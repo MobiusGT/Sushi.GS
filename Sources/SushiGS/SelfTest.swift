@@ -132,6 +132,120 @@ enum SelfTest {
             model.isBatchInQueueStage && model.batchJobs.count == 2 && model.batchJobs.allSatisfy { $0.sourceURL != nil && $0.targetURL == nil }
         )
 
+        // 6b. Real-folder end-to-end AppModel Auto Batch integration tests (Stage 1 3-folder, Stage 2 Add External Subtitle Folder, symlink + nested subfolders)
+        let fm = FileManager.default
+        let integrationRoot = fm.temporaryDirectory.appendingPathComponent("sushigs-selftest-autobatch-\(UUID().uuidString)")
+        let srcDir = integrationRoot.appendingPathComponent("Source")
+        let dstDir = integrationRoot.appendingPathComponent("Target")
+        let subDir = integrationRoot.appendingPathComponent("Subtitles")
+        let nestedSubDir = subDir.appendingPathComponent("NestedSubs/Season1")
+        let emptySubDir = integrationRoot.appendingPathComponent("EmptySubs")
+        let symlinkSubDir = integrationRoot.appendingPathComponent("SubtitlesLink")
+        defer { try? fm.removeItem(at: integrationRoot) }
+
+        do {
+            try fm.createDirectory(at: srcDir, withIntermediateDirectories: true)
+            try fm.createDirectory(at: dstDir, withIntermediateDirectories: true)
+            try fm.createDirectory(at: nestedSubDir, withIntermediateDirectories: true)
+            try fm.createDirectory(at: emptySubDir, withIntermediateDirectories: true)
+            try fm.createSymbolicLink(at: symlinkSubDir, withDestinationURL: subDir)
+
+            let sourceFiles = [
+                "[Moozzi2] Mahou no Angel Sweet Mint - 01 (BD Remux 1080p).mkv",
+                "[Moozzi2] Mahou no Angel Sweet Mint - 02 (BD Remux 1080p).mkv",
+                "[Moozzi2] Mahou no Angel Sweet Mint - 03 (BD Remux 1080p).mkv",
+                "[Moozzi2] Mahou no Angel Sweet Mint - Menu 01 (BD Remux 1080p).mkv",
+                "[Moozzi2] Mahou no Angel Sweet Mint - NCOP (BD Remux 1080p).mkv",
+            ]
+            for name in sourceFiles {
+                fm.createFile(atPath: srcDir.appendingPathComponent(name).path, contents: Data())
+            }
+            for name in ["[Stardust] 00001.mkv", "[Stardust] 00002.mkv", "[Stardust] 00003.mkv"] {
+                fm.createFile(atPath: dstDir.appendingPathComponent(name).path, contents: Data())
+            }
+            fm.createFile(atPath: subDir.appendingPathComponent("[Stardust] 00001 complete++.ass").path, contents: Data())
+            fm.createFile(atPath: subDir.appendingPathComponent("[Stardust] 00002 complete++.ASS").path, contents: Data())
+            fm.createFile(atPath: nestedSubDir.appendingPathComponent("[Stardust] 00003 complete++.ass").path, contents: Data())
+
+            func verifyThreeEpisodesPaired(in jobs: [EpisodeJob]) -> Bool {
+                let expected: [(src: String, dst: String, sub: String)] = [
+                    (
+                        "[Moozzi2] Mahou no Angel Sweet Mint - 01 (BD Remux 1080p).mkv",
+                        "[Stardust] 00001.mkv",
+                        "[Stardust] 00001 complete++.ass"
+                    ),
+                    (
+                        "[Moozzi2] Mahou no Angel Sweet Mint - 02 (BD Remux 1080p).mkv",
+                        "[Stardust] 00002.mkv",
+                        "[Stardust] 00002 complete++.ASS"
+                    ),
+                    (
+                        "[Moozzi2] Mahou no Angel Sweet Mint - 03 (BD Remux 1080p).mkv",
+                        "[Stardust] 00003.mkv",
+                        "[Stardust] 00003 complete++.ass"
+                    ),
+                ]
+                return expected.allSatisfy { item in
+                    jobs.contains { job in
+                        job.sourceURL?.lastPathComponent == item.src
+                            && job.targetURL?.lastPathComponent == item.dst
+                            && job.externalSubtitleURL?.lastPathComponent == item.sub
+                            && job.useExternalSubtitle
+                            && job.isComplete(for: .external)
+                            && !job.isVerified
+                    }
+                }
+            }
+
+            // Flow A: Stage 1 3-folder External intake (with empty-folder guard + nested subfolder + uppercase .ASS)
+            model.clearBatchQueue()
+            model.batchSubtitleMode = .external
+            model.stageBatchInput([srcDir], slot: .sourceMedia, replaceExisting: true)
+            model.stageBatchInput([dstDir], slot: .targetMedia, replaceExisting: true)
+            let stayedBeforeSubs = !model.isBatchInQueueStage
+            model.stageBatchInput([emptySubDir], slot: .externalSubtitles, replaceExisting: true)
+            let stayedOnEmptySubs = !model.isBatchInQueueStage
+            model.stageBatchInput([subDir], slot: .externalSubtitles, replaceExisting: true)
+            check(
+                "AppModel Stage 1 3-folder External intake pairs Moozzi2 + Stardust + complete++.ass (incl. nested & .ASS)",
+                stayedBeforeSubs
+                    && stayedOnEmptySubs
+                    && model.isBatchInQueueStage
+                    && model.batchSubtitleMode == .external
+                    && verifyThreeEpisodesPaired(in: model.batchJobs),
+                detail: "jobs=\(model.batchJobs.map { "\($0.episodeBadge):\($0.sourceURL?.lastPathComponent ?? "nil")->\($0.targetURL?.lastPathComponent ?? "nil")|\($0.externalSubtitleURL?.lastPathComponent ?? "nil")" }.joined(separator: "; "))"
+            )
+
+            // Flow B: Stage 1 Embedded -> auto Stage 2 -> Stage 2 Add External Subtitle Folder
+            model.clearBatchQueue()
+            model.batchSubtitleMode = .embedded
+            model.stageBatchInput([srcDir], slot: .sourceMedia, replaceExisting: true)
+            model.stageBatchInput([dstDir], slot: .targetMedia, replaceExisting: true)
+            let enteredStage2Embedded = model.isBatchInQueueStage && model.batchSubtitleMode == .embedded
+            model.stageBatchInput([subDir], slot: .externalSubtitles, replaceExisting: false)
+            check(
+                "AppModel Stage 2 Add External Subtitle Folder switches to External and pairs all 3 episodes",
+                enteredStage2Embedded
+                    && model.batchSubtitleMode == .external
+                    && verifyThreeEpisodesPaired(in: model.batchJobs),
+                detail: "jobs=\(model.batchJobs.map { "\($0.episodeBadge):\($0.externalSubtitleURL?.lastPathComponent ?? "nil")" }.joined(separator: ", "))"
+            )
+
+            // Flow C: Stage 2 direct drop of symlinked Subtitle Folder
+            model.clearBatchQueue()
+            model.batchSubtitleMode = .embedded
+            model.stageBatchInput([srcDir], slot: .sourceMedia, replaceExisting: true)
+            model.stageBatchInput([dstDir], slot: .targetMedia, replaceExisting: true)
+            model.handleAutoBatchStage2Drop([symlinkSubDir])
+            check(
+                "AppModel Stage 2 drop of symlinked Subtitle Folder scans & pairs all 3 episodes",
+                model.batchSubtitleMode == .external && verifyThreeEpisodesPaired(in: model.batchJobs),
+                detail: "subs=\(model.stagedExternalSubtitles.count)"
+            )
+        } catch {
+            check("AppModel real-folder Auto Batch integration setup", false, detail: error.localizedDescription)
+        }
+
         // 7. Manual Batch strict row-by-row pairing, blank slot & Embedded/External completeness check
         model.clearManualBatch()
         model.setManualSubtitleMode(.external)

@@ -35,9 +35,80 @@ enum SushiHelpText {
     static let copyTargetSubtitles = "Keep original subtitle tracks from the Target MKV alongside the newly synced subtitle."
     static let copyTargetTags = "Preserve global and per-track metadata tags from the Target MKV."
     static let customOutputDir = "Write synced subtitles and Merged Files to a chosen folder instead of beside each Target file."
-    static let subtitleModeSwitch = "Embedded uses subtitle tracks inside Source videos; External pairs standalone .ass, .srt, or .ssa subtitle files."
+    static let subtitleModeSwitch = "Embedded uses subtitle tracks inside Source videos; External pairs standalone .ass, .srt, .ssa, .sub, or .vtt subtitle files."
     static let embeddedSubtitlesMode = "Use subtitle tracks embedded inside the Source video files."
-    static let externalSubtitlesMode = "Pair standalone .ass, .srt, or .ssa files from an external subtitle folder."
+    static let externalSubtitlesMode = "Pair standalone .ass, .srt, .ssa, .sub, or .vtt files from an external subtitle folder."
+}
+
+/// Robust macOS Finder drag-and-drop URL loader supporting both `public.file-url`
+/// data representations (including `file:///.file/id=...` reference URLs) and `URL` objects.
+enum DroppedFileURLLoader {
+    @MainActor
+    static func load(
+        from providers: [NSItemProvider],
+        completion: @escaping @MainActor ([URL]) -> Void
+    ) -> Bool {
+        let valid = providers.filter {
+            $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+                || $0.canLoadObject(ofClass: URL.self)
+        }
+        guard !valid.isEmpty else { return false }
+
+        let collector = DroppedURLCollector(total: valid.count, completion: completion)
+        for provider in valid {
+            if provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+                provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+                    let resolved = data.flatMap(resolveFileURL(from:))
+                    Task { @MainActor in collector.record(resolved) }
+                }
+            } else {
+                _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                    let resolved = url.map { (($0 as NSURL).filePathURL ?? $0).standardizedFileURL }
+                    Task { @MainActor in collector.record(resolved) }
+                }
+            }
+        }
+        return true
+    }
+
+    nonisolated private static func resolveFileURL(from data: Data) -> URL? {
+        if let rawURL = URL(dataRepresentation: data, relativeTo: nil) {
+            let fileURL = (rawURL as NSURL).filePathURL ?? rawURL
+            if fileURL.isFileURL {
+                return fileURL.standardizedFileURL
+            }
+        }
+        if let str = String(data: data, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !str.isEmpty {
+            if let url = URL(string: str), url.isFileURL {
+                return ((url as NSURL).filePathURL ?? url).standardizedFileURL
+            }
+            if str.hasPrefix("/") {
+                return URL(fileURLWithPath: str).standardizedFileURL
+            }
+        }
+        return nil
+    }
+}
+
+@MainActor
+private final class DroppedURLCollector {
+    private var remaining: Int
+    private var urls: [URL] = []
+    private let completion: ([URL]) -> Void
+
+    init(total: Int, completion: @escaping ([URL]) -> Void) {
+        self.remaining = total
+        self.completion = completion
+    }
+
+    func record(_ url: URL?) {
+        if let url { urls.append(url) }
+        remaining -= 1
+        if remaining <= 0, !urls.isEmpty {
+            completion(urls)
+        }
+    }
 }
 
 extension View {
@@ -551,16 +622,14 @@ struct FileDropZoneCard: View {
     }
 
     private func handleFileDrop(providers: [NSItemProvider]) -> Bool {
-        guard let provider = providers.first(where: { $0.canLoadObject(ofClass: URL.self) }) else {
-            return false
-        }
-        _ = provider.loadObject(ofClass: URL.self) { url, _ in
-            guard let url else { return }
+        let accepted = acceptedExtensions
+        let onDrop = onDropFile
+        return DroppedFileURLLoader.load(from: providers) { urls in
+            guard let url = urls.first else { return }
             let ext = url.pathExtension.lowercased()
-            guard acceptedExtensions.isEmpty || acceptedExtensions.contains(ext) else { return }
-            Task { @MainActor in onDropFile(url) }
+            guard accepted.isEmpty || accepted.contains(ext) else { return }
+            onDrop(url)
         }
-        return true
     }
 }
 
@@ -731,7 +800,7 @@ struct TrackSelectionCard: View {
                 if job.sourceURL != nil {
                     Button("Choose External Subtitle…", action: onChooseExternalSub)
                         .controlSize(.small)
-                        .hoverDescription("Select an external .ass, .srt, or .ssa subtitle file to sync")
+                        .hoverDescription("Select an external .ass, .srt, .ssa, .sub, or .vtt subtitle file to sync")
                 }
             }
         } else {
@@ -780,12 +849,12 @@ struct TrackSelectionCard: View {
                     .controlSize(.small)
                     .hoverDescription("Remove the external subtitle file")
             } else {
-                Text("Select an `.ass`, `.srt`, or `.ssa` file to retime.")
+                Text("Select an `.ass`, `.srt`, `.ssa`, `.sub`, or `.vtt` file to retime.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 Button("Choose Subtitle…", action: onChooseExternalSub)
                     .controlSize(.small)
-                    .hoverDescription("Browse for an external .ass, .srt, or .ssa subtitle file")
+                    .hoverDescription("Browse for an external .ass, .srt, .ssa, .sub, or .vtt subtitle file")
             }
         }
     }

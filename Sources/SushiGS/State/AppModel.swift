@@ -345,9 +345,9 @@ final class AppModel {
     var hasAllRequiredBatchFolders: Bool {
         switch batchSubtitleMode {
         case .embedded:
-            hasStagedSource && hasStagedTarget
+            !stagedSourceMedia.isEmpty && !stagedTargetMedia.isEmpty
         case .external:
-            hasStagedSource && hasStagedTarget && hasStagedExternalSubtitles
+            !stagedSourceMedia.isEmpty && !stagedTargetMedia.isEmpty && !stagedExternalSubtitles.isEmpty
         }
     }
 
@@ -570,30 +570,13 @@ final class AppModel {
     // MARK: - Auto Batch Intake, Stage 2 Additions & Pair Verification
 
     /// Stage 1 / Stage 2 intake handler for Auto Batch.
-    /// In Embedded mode, auto-transitions to Stage 2 once Source Media and Target Media folders are set.
-    /// In External mode, auto-transitions to Stage 2 only once Source Media, Target Media, and Subtitle folders are all set.
+    /// In Embedded mode, auto-transitions to Stage 2 once Source Media and Target Media folders contain media.
+    /// In External mode, auto-transitions to Stage 2 only once Source Media, Target Media, and Subtitle folders all contain files.
     func stageBatchInput(_ urls: [URL], slot: BatchIntakeSlot, replaceExisting: Bool = false) {
-        var media: [URL] = []
-        var subs: [URL] = []
-        var pickedFolder: URL?
-        let fm = FileManager.default
-
-        for url in urls {
-            var isDir: ObjCBool = false
-            if fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
-                pickedFolder = url
-                let scanned = EpisodePairing.scanMediaFiles(in: url)
-                media.append(contentsOf: scanned.media)
-                subs.append(contentsOf: scanned.subtitles)
-            } else {
-                let ext = url.pathExtension.lowercased()
-                if EpisodePairing.mediaExtensions.contains(ext) {
-                    media.append(url)
-                } else if EpisodePairing.subtitleExtensions.contains(ext), !url.lastPathComponent.contains(".sushi.") {
-                    subs.append(url)
-                }
-            }
-        }
+        let scannedInput = scanBatchURLs(urls)
+        let media = scannedInput.media
+        let subs = scannedInput.subtitles
+        let pickedFolder = scannedInput.pickedFolder
 
         switch slot {
         case .sourceMedia:
@@ -633,6 +616,61 @@ final class AppModel {
         syncMenuState()
     }
 
+    /// Handles folders or files dropped directly onto the Stage 2 Auto Batch queue.
+    func handleAutoBatchStage2Drop(_ urls: [URL]) {
+        guard !isRunning else { return }
+        let scanned = scanBatchURLs(urls)
+        let existingMediaPaths = Set(
+            (stagedSourceMedia + stagedTargetMedia + batchJobs.compactMap(\.sourceURL) + batchJobs.compactMap(\.targetURL))
+                .map { $0.standardizedFileURL.path }
+        )
+        let newMedia = scanned.media.filter { !existingMediaPaths.contains($0.standardizedFileURL.path) }
+
+        if !scanned.subtitles.isEmpty && newMedia.isEmpty {
+            stageBatchInput(urls, slot: .externalSubtitles, replaceExisting: false)
+            return
+        }
+
+        if !newMedia.isEmpty {
+            let mediaSlot: BatchIntakeSlot = stagedSourceMedia.isEmpty && batchJobs.allSatisfy({ $0.sourceURL == nil })
+                ? .sourceMedia
+                : (stagedTargetMedia.isEmpty && batchJobs.allSatisfy({ $0.targetURL == nil }) ? .targetMedia : .sourceMedia)
+            stageBatchInput(urls, slot: mediaSlot, replaceExisting: false)
+        }
+
+        if !scanned.subtitles.isEmpty {
+            stageBatchInput(urls, slot: .externalSubtitles, replaceExisting: false)
+        }
+    }
+
+    private func scanBatchURLs(_ urls: [URL]) -> (media: [URL], subtitles: [URL], pickedFolder: URL?) {
+        var media: [URL] = []
+        var subs: [URL] = []
+        var pickedFolder: URL?
+        let fm = FileManager.default
+
+        for rawURL in urls {
+            let normalized = ((rawURL as NSURL).filePathURL ?? rawURL).standardizedFileURL
+            let resolved = normalized.resolvingSymlinksInPath()
+            var isDir: ObjCBool = false
+            if fm.fileExists(atPath: resolved.path, isDirectory: &isDir), isDir.boolValue {
+                pickedFolder = normalized
+                let scanned = EpisodePairing.scanMediaFiles(in: resolved)
+                media.append(contentsOf: scanned.media)
+                subs.append(contentsOf: scanned.subtitles)
+            } else {
+                let ext = normalized.pathExtension.lowercased()
+                if EpisodePairing.mediaExtensions.contains(ext) {
+                    media.append(normalized)
+                } else if EpisodePairing.subtitleExtensions.contains(ext),
+                          !normalized.lastPathComponent.localizedCaseInsensitiveContains(".sushi.") {
+                    subs.append(normalized)
+                }
+            }
+        }
+        return (uniqueURLs(media), uniqueURLs(subs), pickedFolder)
+    }
+
     func clearBatchSourceIntake() {
         batchSourceFolder = nil
         stagedSourceMedia = []
@@ -664,9 +702,14 @@ final class AppModel {
     }
 
     func pickBatchSubtitleFolder(replaceExisting: Bool = false) {
-        guard let folder = pickFolder(title: "Select External Subtitle Folder") else { return }
+        let urls = pickMultipleFiles(
+            title: "Select External Subtitle Folder or Files",
+            allowedExtensions: Array(EpisodePairing.subtitleExtensions),
+            initialDirectory: effectiveBatchSubtitleDirectory
+        )
+        guard !urls.isEmpty else { return }
         sidebar = .autoBatch
-        stageBatchInput([folder], slot: .externalSubtitles, replaceExisting: replaceExisting)
+        stageBatchInput(urls, slot: .externalSubtitles, replaceExisting: replaceExisting)
     }
 
     /// Transitions immediately from Stage 1 intake into Stage 2 queue.
@@ -706,9 +749,9 @@ final class AppModel {
         var existingByFullKey: [String: EpisodeJob] = [:]
         var existingByMediaKey: [String: EpisodeJob] = [:]
         for job in batchJobs {
-            let s = job.sourceURL?.path ?? ""
-            let t = job.targetURL?.path ?? ""
-            let sub = job.externalSubtitleURL?.path ?? ""
+            let s = job.sourceURL?.standardizedFileURL.path ?? ""
+            let t = job.targetURL?.standardizedFileURL.path ?? ""
+            let sub = job.externalSubtitleURL?.standardizedFileURL.path ?? ""
             if !s.isEmpty || !t.isEmpty || !sub.isEmpty {
                 existingByFullKey["\(s)|\(t)|\(sub)"] = job
             }
@@ -731,27 +774,50 @@ final class AppModel {
         )
 
         let rebuilt: [EpisodeJob] = drafts.enumerated().map { idx, draft in
-            let s = draft.sourceFile?.path ?? ""
-            let t = draft.targetFile?.path ?? ""
-            let sub = draft.externalSubtitleFile?.path ?? ""
+            let s = draft.sourceFile?.standardizedFileURL.path ?? ""
+            let t = draft.targetFile?.standardizedFileURL.path ?? ""
+            let sub = draft.externalSubtitleFile?.standardizedFileURL.path ?? ""
+            let resolvedBadge = draft.episodeKey?.displayBadge ?? String(format: "#%02d", idx + 1)
 
             if let preserved = existingByFullKey["\(s)|\(t)|\(sub)"] {
+                if let keyBadge = draft.episodeKey?.displayBadge {
+                    preserved.episodeBadge = keyBadge
+                }
                 if batchSubtitleMode == .external {
                     preserved.useExternalSubtitle = true
+                }
+                preserved.matchKind = draft.matchKind
+                if !preserved.isComplete(for: batchSubtitleMode) {
+                    preserved.isVerified = false
                 }
                 return preserved
             }
 
             if !s.isEmpty && !t.isEmpty, let preserved = existingByMediaKey["\(s)|\(t)"] {
-                preserved.externalSubtitleURL = draft.externalSubtitleFile
-                preserved.useExternalSubtitle = (batchSubtitleMode == .external) || (draft.externalSubtitleFile != nil)
-                preserved.matchKind = draft.matchKind
-                preserved.isVerified = draft.isVerified
+                if let keyBadge = draft.episodeKey?.displayBadge {
+                    preserved.episodeBadge = keyBadge
+                }
+                if batchSubtitleMode == .external {
+                    preserved.externalSubtitleURL = draft.externalSubtitleFile
+                    preserved.useExternalSubtitle = true
+                    preserved.matchKind = draft.matchKind
+                    preserved.isVerified = draft.isVerified
+                } else {
+                    // Preserve any manually overridden per-row external subtitle while in Embedded mode
+                    if preserved.externalSubtitleURL == nil {
+                        preserved.externalSubtitleURL = draft.externalSubtitleFile
+                    }
+                    preserved.useExternalSubtitle = preserved.externalSubtitleURL != nil
+                    preserved.matchKind = draft.matchKind
+                    if !preserved.isComplete(for: batchSubtitleMode) {
+                        preserved.isVerified = false
+                    }
+                }
                 return preserved
             }
 
             let job = EpisodeJob(
-                episodeBadge: draft.episodeKey?.displayBadge ?? String(format: "#%02d", idx + 1),
+                episodeBadge: resolvedBadge,
                 matchKind: draft.matchKind,
                 isVerified: draft.isVerified,
                 sourceURL: draft.sourceFile,
@@ -769,6 +835,8 @@ final class AppModel {
             return job
         }
         batchJobs = rebuilt
+        let validIDs = Set(rebuilt.map(\.id))
+        selectedBatchJobIDs = selectedBatchJobIDs.intersection(validIDs)
         if selectedBatchJobIDs.isEmpty, let first = rebuilt.first {
             selectedBatchJobIDs = [first.id]
         }
@@ -812,7 +880,10 @@ final class AppModel {
 
     private func uniqueURLs(_ urls: [URL]) -> [URL] {
         var seen: Set<String> = []
-        return urls.filter { seen.insert($0.path).inserted }
+        return urls.compactMap { raw -> URL? in
+            let normalized = ((raw as NSURL).filePathURL ?? raw).standardizedFileURL
+            return seen.insert(normalized.path).inserted ? normalized : nil
+        }
     }
 
     func probeAllBatchJobs() async {

@@ -173,10 +173,12 @@ public struct ManualBatchColumns: Equatable, Hashable, Sendable {
         let allowed = column.allowedExtensions
         var collected: [URL] = []
 
-        for url in urls {
+        for rawURL in urls {
+            let url = ((rawURL as NSURL).filePathURL ?? rawURL).standardizedFileURL
+            let resolved = url.resolvingSymlinksInPath()
             var isDir: ObjCBool = false
-            if fm.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue {
-                let scanned = EpisodePairing.scanMediaFiles(in: url)
+            if fm.fileExists(atPath: resolved.path, isDirectory: &isDir), isDir.boolValue {
+                let scanned = EpisodePairing.scanMediaFiles(in: resolved)
                 let dirFiles = (column == .sourceSubtitle ? scanned.subtitles : scanned.media)
                     .sorted {
                         $0.lastPathComponent.localizedStandardCompare($1.lastPathComponent) == .orderedAscending
@@ -185,7 +187,7 @@ public struct ManualBatchColumns: Equatable, Hashable, Sendable {
             } else {
                 let ext = url.pathExtension.lowercased()
                 guard allowed.contains(ext) else { continue }
-                if column == .sourceSubtitle && url.lastPathComponent.contains(".sushi.") {
+                if column == .sourceSubtitle && url.lastPathComponent.localizedCaseInsensitiveContains(".sushi.") {
                     continue
                 }
                 collected.append(url)

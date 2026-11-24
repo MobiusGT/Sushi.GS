@@ -11,6 +11,7 @@ struct BatchQueueView: View {
     @State private var isDropSourceTargeted = false
     @State private var isDropTargetTargeted = false
     @State private var isDropSubtitleTargeted = false
+    @State private var isStage2DropTargeted = false
 
     var body: some View {
         @Bindable var model = model
@@ -55,6 +56,19 @@ struct BatchQueueView: View {
                     .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
                 }
                 .frame(minWidth: 0, maxWidth: .infinity, maxHeight: .infinity)
+                .overlay {
+                    if isStage2DropTargeted {
+                        RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+                            .strokeBorder(Palette.accent, lineWidth: 2)
+                            .padding(Space.xs)
+                            .allowsHitTesting(false)
+                    }
+                }
+                .onDrop(of: [.fileURL], isTargeted: $isStage2DropTargeted) { providers in
+                    DroppedFileURLLoader.load(from: providers) { urls in
+                        model.handleAutoBatchStage2Drop(urls)
+                    }
+                }
                 .gridArea("batch", inset: Space.margin)
             }
         }
@@ -160,7 +174,7 @@ struct BatchQueueView: View {
                     if isExternal {
                         BatchIntakeFolderCard(
                             title: "Subtitle Folder",
-                            emptyPrompt: "Drop a folder or .ass, .srt, .ssa files to pair",
+                            emptyPrompt: "Drop a folder or .ass, .srt, .ssa, .sub, .vtt files to pair",
                             chooseLabel: "Choose Folder…",
                             symbol: "captions.bubble",
                             isReady: model.hasStagedExternalSubtitles,
@@ -319,7 +333,7 @@ struct BatchQueueView: View {
                     .padding(.horizontal, Space.sm)
                     .padding(.vertical, 2)
                     .background(Palette.accent.opacity(0.14), in: Capsule())
-                    .hoverDescription("Auto Batch is pairing external .ass, .srt, and .ssa subtitle files")
+                    .hoverDescription("Auto Batch is pairing external .ass, .srt, .ssa, .sub, and .vtt subtitle files")
             }
 
             Spacer(minLength: Space.sm)
@@ -832,35 +846,7 @@ private struct BatchIntakeFolderCard: View {
     }
 
     private func loadDroppedURLs(from providers: [NSItemProvider], completion: @escaping @MainActor ([URL]) -> Void) -> Bool {
-        let valid = providers.filter { $0.canLoadObject(ofClass: URL.self) }
-        guard !valid.isEmpty else { return false }
-        let collector = URLCollector(total: valid.count, completion: completion)
-        for p in valid {
-            _ = p.loadObject(ofClass: URL.self) { url, _ in
-                Task { @MainActor in collector.record(url) }
-            }
-        }
-        return true
-    }
-}
-
-@MainActor
-private final class URLCollector {
-    private var remaining: Int
-    private var urls: [URL] = []
-    private let completion: ([URL]) -> Void
-
-    init(total: Int, completion: @escaping ([URL]) -> Void) {
-        self.remaining = total
-        self.completion = completion
-    }
-
-    func record(_ url: URL?) {
-        if let url { urls.append(url) }
-        remaining -= 1
-        if remaining <= 0, !urls.isEmpty {
-            completion(urls)
-        }
+        DroppedFileURLLoader.load(from: providers, completion: completion)
     }
 }
 
