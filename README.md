@@ -76,18 +76,6 @@
 
 ---
 
-## How Sushi.GS Compares
-
-| Tool | macOS Apple Silicon | Native GUI | Batch Modes | Setup |
-| :--- | :--- | :--- | :--- | :--- |
-| **Sushi.GS** | Yes (`arm64`, macOS 26+) | Native macOS SwiftUI | Single Episode, Auto Batch (2- & 3-way), Manual Batch | `.dmg` + 1-click in-app installer (`uv`, `sushi-batch`, `ffmpeg`, `mkvmerge`) |
-| **[`C1fer/sushi-batch`](https://github.com/C1fer/sushi-batch)** | Via Python 3.13+ | Cross-platform PyQt / CLI | Folder auto-batch + MKV merge & audio encode | Manual Python / `uv` + FFmpeg / MKVToolNix setup |
-| **`SubtitleSynchroLauncher`** | No (Windows only) | Windows GUI | Batch launcher wrapper | Windows binary + manual tool paths |
-| **[`tp7/Sushi`](https://github.com/tp7/Sushi)** | Legacy (unmaintained Python) | CLI only | Single-file CLI (manual scripting) | Manual Python / OpenCV / FFmpeg setup |
-| **`Sushi.Net`** | Via .NET runtime / build | CLI only | Single-file CLI (manual scripting) | Manual .NET + FFmpeg / MKVToolNix setup |
-
----
-
 ## Installation
 
 Requires an **Apple Silicon Mac running macOS 26+**.
@@ -114,14 +102,10 @@ GitHub Release builds without a paid Apple Developer ID certificate are ad-hoc s
 ### Is there a native Mac GUI for Sushi subtitle retiming?
 Yes. **Sushi.GS** ("Gas Station Sushi") is a native Apple Silicon SwiftUI macOS app that wraps [`C1fer/sushi-batch`](https://github.com/C1fer/sushi-batch) and [`C1fer/sushi-next`](https://github.com/C1fer/sushi-next) (`sushi-sub-next`). It replaces CLI invocations with drag-and-drop **Single Episode**, **Auto Batch**, and **Manual Batch** workspaces, explicit audio/subtitle track pickers, inline Sushi sync flags, and a live Log Inspector.
 
-### How do I sync WEB-DL or fansub ASS subtitles to Blu-ray (BD Remux) MKVs on macOS without breaking typesetting?
-Add your WEB-DL (Source) files, Blu-ray / BD Remux (Target) files, and optional external `.ass`/`.srt`/`.ssa` subtitles into **Single Episode**, **Auto Batch**, or **Manual Batch**, pick the matching audio track on each side (for example, Japanese `jpn`), and click **Run Sync**. Sushi shifts each dialogue and typesetting event individually by matching the Source and Target audio streams—preserving ASS styling, signs, karaoke, and animations—and can optionally resample subtitle resolution with `aegisub-cli` and mux everything (including Source fonts/attachments) into a clean MKV via `mkvmerge`.
 
 ### Does Sushi.GS require Terminal commands or manual Homebrew/Python installation?
 No. After dragging `Sushi.GS.app` from `Sushi.GS-0.1.1-arm64.dmg` into `/Applications`, open **Dependencies (`⌘4`)** and click **Install Required Dependencies**. Sushi.GS automatically downloads and manages `uv`, Python 3.13, `sushi-batch` + `sushi-sub-next`, standalone Apple Silicon `ffmpeg`/`ffprobe`, and optional `mkvmerge` and `opusenc` inside `~/Library/Application Support/Sushi.GS/` without modifying system Python.
 
-### How does Sushi dual-audio matching differ from `ffsubsync` or `alass`?
-`ffsubsync` and `alass` rely on Voice Activity Detection (VAD) or a second reference subtitle track to align speech timings, which works well for uniform offsets but can drift across anime scene cuts, commercial breaks, differing openings/endings, or non-dialogue ASS typesetting. **Sushi** compares the actual audio waveforms of a Source video (already timed to your subtitles) directly against the Target video (such as a Blu-ray remux), producing per-segment, keyframe-snapped shifts that stay accurate across edits while keeping ASS typesetting intact.
 
 ---
 
